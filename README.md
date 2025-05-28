@@ -1,5 +1,7 @@
 # Blog Project
-This is a blog project use hexo
+This is a blog project use hexo, which can be visited by the website below:
+https://shayne007.github.io/
+
 # Preparation
 ```bash
 # first clone the repository
