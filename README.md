@@ -12,3 +12,8 @@ hexo server
 # we publish the generate files to https://shayne007.github.io/ configured in _config.yml
 hexo deploy
 ```
+
+# Create a new post
+```bash
+hexo new "My New Post"
+```
