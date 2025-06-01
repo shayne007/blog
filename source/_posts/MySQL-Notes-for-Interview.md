@@ -11,7 +11,7 @@ categories: [mysql]
 * 如何理解数据库表设计的三个范式
    * 第一范式：1NF 是对属性的原子性约束，要求**属性具有原子性**，不可再分解；
    * 第二范式：2NF 是对记录的惟一性约束，要求**记录有惟一标识**，即实体的惟一性；
-   * 第三范式：3NF 是对字段冗余性的约束，即任何字段不能由其他字段派生出来，它要求**字段没有冗****余**。
+   * 第三范式：3NF 是对字段冗余性的约束，即任何字段不能由其他字段派生出来，它要求**字段没有冗余**。
 * 查询SQL的执行过程
    * 执行**连接器**
       * 管理连接，包括权限认证
@@ -89,7 +89,7 @@ categories: [mysql]
 * 版本链
    * 事务id（trx_id）：事务版本号
    * 回滚指针(roll_ptr)
-   ![回滚指针](https://oimages2.shimonote.com/pX4tjYjXIvdzRuhR.png?auth_key=1748767051-2e58807d7e4747ddb6c441e8e6a7e986-0-603b651ebd422fa90bad3f6b6945c35e&response-content-disposition=inline%253B+filename%253D%2522image.png%2522%253B+filename%252A%253DUTF-8%2527%2527image.png&x-image-process=image%252Fauto-orient%252C1%252Fresize%252Cm_lfit%252Cw_1920%252Fquality%252Cq_75%252Fformat%252Cwebp%252Fignore-error%252C1)
+   ![回滚指针](https://uploader.shimo.im/f/pX4tjYjXIvdzRuhR.png!thumbnail?accessToken=eyJhbGciOiJIUzI1NiIsImtpZCI6ImRlZmF1bHQiLCJ0eXAiOiJKV1QifQ.eyJleHAiOjE3NDg3NjgxNzksImZpbGVHVUlEIjoiWEtxNDJ5TE54ZUY5RWRBTiIsImlhdCI6MTc0ODc2Nzg3OSwiaXNzIjoidXBsb2FkZXJfYWNjZXNzX3Jlc291cmNlIiwicGFhIjoiYWxsOmFsbDoiLCJ1c2VySWQiOjE4ODA2NDY4fQ.YXDluI8DZURAoXzZ-VQ2fc-bLD_FAb73Z1hN8_8umps)
    * undolog
       * 版本链存储咋在undolog，形似链表
 * Read View
