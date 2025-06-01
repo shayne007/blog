@@ -1,5 +1,6 @@
 ---
-title: ElasticSearch Notes
+title: ElasticSearch Notes for Interview
+author: Charlie
 date: 2025-05-28 16:51:37
 tags: [middleware]
 categories: [JAVA]
