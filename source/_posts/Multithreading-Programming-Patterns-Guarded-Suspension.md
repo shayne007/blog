@@ -2,8 +2,8 @@
 title: Multithreading Programming Patterns - Guarded Suspension
 date: 2021-05-15 13:12:17
 updated: 2021-05-15 13:19:29
-tags: [concurrency]
-categories: [JAVA]
+tags: [concurrency,java]
+categories: [java]
 ---
 
 # Multithreading Programming Patterns - Guarded Suspension

@@ -3,7 +3,7 @@ title: Start Anew Hard
 date: 2021-05-15 13:12:17
 updated: 2021-05-15 13:19:29
 tags: [in-the-sky]
-categories: []
+categories: [essays]
 ---
 
 # Start Anew Hard

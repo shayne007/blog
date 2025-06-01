@@ -1,7 +1,8 @@
 ---
 title: Kafka Notes for Interview
 date: 2025-06-01 15:58:13
-tags:
+tags: [middleware, kafka]
+categories: [kafka]
 ---
 * Kafka基础知识
 
