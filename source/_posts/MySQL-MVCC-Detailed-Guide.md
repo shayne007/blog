@@ -1,5 +1,5 @@
 ---
-title: MVCC Detailed Guide
+title: MySQL MVCC Detailed Guide
 date: 2025-06-07 20:12:50
 tags: [mysql]
 categories: [mysql]
