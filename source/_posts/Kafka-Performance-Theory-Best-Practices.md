@@ -37,27 +37,41 @@ Kafka treats each partition as an immutable, append-only log. This design choice
 ### Distributed Commit Log
 
 {% mermaid graph LR %}
-    subgraph "Topic: user-events"
+    subgraph "Topic: user-events (Replication Factor = 3)"
         P1[Partition 0]
         P2[Partition 1]
         P3[Partition 2]
     end
     
     subgraph "Broker 1"
-        B1P1[P0 Leader]
-        B1P2[P1 Replica]
+        B1P0L[P0 Leader]
+        B1P1F[P1 Follower]
+        B1P2F[P2 Follower]
     end
     
     subgraph "Broker 2"
-        B2P1[P0 Replica]
-        B2P2[P1 Leader]
-        B2P3[P2 Replica]
+        B2P0F[P0 Follower]
+        B2P1L[P1 Leader]
+        B2P2F[P2 Follower]
     end
     
     subgraph "Broker 3"
-        B3P2[P1 Replica]
-        B3P3[P2 Leader]
+        B3P0F[P0 Follower]
+        B3P1F[P1 Follower]
+        B3P2L[P2 Leader]
     end
+    
+    P1 -.-> B1P0L
+    P1 -.-> B2P0F
+    P1 -.-> B3P0F
+    
+    P2 -.-> B1P1F
+    P2 -.-> B2P1L
+    P2 -.-> B3P1F
+    
+    P3 -.-> B1P2F
+    P3 -.-> B2P2F
+    P3 -.-> B3P2L
 {% endmermaid %}
 
 ---

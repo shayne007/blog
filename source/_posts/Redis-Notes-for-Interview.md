@@ -2,7 +2,7 @@
 title: Redis Notes for Interview
 author: Charlie
 date: 2025-06-01 16:20:52
-tags: [middleware, redis]
+tags: [redis]
 categories: [redis]
 ---
 
