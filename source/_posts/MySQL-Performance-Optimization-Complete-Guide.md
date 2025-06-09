@@ -242,7 +242,6 @@ WHERE MATCH(name) AGAINST('phone' IN NATURAL LANGUAGE MODE);
 ## Schema Design Best Practices
 
 ### Normalization vs Denormalization Trade-offs
-
 {% mermaid flowchart LR %}
     A[Schema Design Decision] --> B[Normalize]
     A --> C[Denormalize]
@@ -255,6 +254,8 @@ WHERE MATCH(name) AGAINST('phone' IN NATURAL LANGUAGE MODE);
     C --> C2[Reduce JOINs]
     C --> C3[Increase Storage]
     
+{% endmermaid %}
+{% mermaid flowchart LR %}  
     subgraph "Decision Factors"
         D1[Read/Write Ratio]
         D2[Query Complexity]
