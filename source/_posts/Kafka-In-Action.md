@@ -2,7 +2,7 @@
 title: Kafka In Action
 date: 2021-05-17 13:12:17
 updated: 2021-05-17 13:19:29
-tags: [middleware, kafka]
+tags: [kafka]
 categories: [kafka]
 ---
 

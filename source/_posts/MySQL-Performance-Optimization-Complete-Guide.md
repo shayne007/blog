@@ -598,7 +598,6 @@ def get_shard_for_user(user_id):
 **Interview Question**: *"How do you implement effective database caching?"*
 
 **Multi-level Caching Architecture**:
-
 {% mermaid flowchart TD %}
     A[Application Request] --> B[L1: Application Cache]
     B -->|Miss| C[L2: Redis/Memcached]
@@ -609,6 +608,8 @@ def get_shard_for_user(user_id):
     F --> G[Update L1 Cache]
     G --> H[Return to Application]
     
+{% endmermaid %}
+{% mermaid flowchart TD %} 
     subgraph "Cache Strategies"
         I[Cache-Aside]
         J[Write-Through]
