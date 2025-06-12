@@ -23,7 +23,7 @@ This guide explores three fundamental cache problems through the lens of Redis, 
 
 ### What is Cache Penetration?
 
-Cache penetration occurs when queries for non-existent data repeatedly bypass the cache and hit the database directly. This happens because the cache doesn't store null or empty results, allowing malicious or accidental queries to overwhelm the database.
+Cache penetration(/ˌpenəˈtreɪʃn/) occurs when queries for non-existent data repeatedly bypass the cache and hit the database directly. This happens because the cache doesn't store null or empty results, allowing malicious or accidental queries to overwhelm the database.
 
 {% mermaid sequenceDiagram %}
     participant Attacker
@@ -464,7 +464,7 @@ class SemaphoreCache:
 
 ### What is Cache Avalanche?
 
-Cache avalanche occurs when a large number of cache entries expire simultaneously, causing massive database load. This can happen due to synchronized expiration times or cache server failures.
+Cache avalanche(/ˈævəlæntʃ/) occurs when a large number of cache entries expire simultaneously, causing massive database load. This can happen due to synchronized expiration times or cache server failures.
 
 {% mermaid flowchart %}
     A[Cache Avalanche Triggers] --> B[Mass Expiration]
