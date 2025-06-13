@@ -4,588 +4,892 @@ date: 2025-06-13 17:50:00
 tags: [system-design, file storage]
 categories: [system-design]
 ---
-## Executive Summary
 
-This document presents a comprehensive design for a distributed file storage service that supports multiple file types, provides RESTful APIs for upload/query operations, and leverages pluggable storage backends (HDFS/NFS) through a Service Provider Interface (SPI). The service generates downloadable URLs upon successful uploads and includes a client SDK for seamless integration.
+## System Overview
 
-**Interview Insight**: *When discussing distributed file storage in interviews, emphasize the CAP theorem trade-offs. This service prioritizes Availability and Partition tolerance over strict Consistency, using eventual consistency for metadata synchronization.*
+### Vision
+Design a scalable, extensible file storage service that abstracts multiple storage backends (HDFS, NFS) through a unified interface, providing seamless file operations for distributed applications.
 
-## System Architecture Overview
+### Key Design Principles
+- **Pluggability**: SPI-based driver architecture for easy backend integration
+- **Scalability**: Handle millions of files with horizontal scaling
+- **Reliability**: 99.9% availability with fault tolerance
+- **Performance**: Sub-second response times for file operations
+- **Security**: Enterprise-grade access control and encryption
 
 ### High-Level Architecture
 
-{% mermaid graph %}
-    subgraph "Client Layer"
-        Web[Web UI]
-        SDK[Client SDK]
-        API[REST API Client]
-    end
+{% mermaid graph TB %}
+    Client[Client Applications] --> SDK[FileSystem SDK]
+    SDK --> LB[Load Balancer]
+    LB --> API[File Storage API Gateway]
     
-    subgraph "API Gateway Layer"
-        LB[Load Balancer]
-        Auth[Authentication Service]
-        Rate[Rate Limiter]
-    end
+    API --> Service[FileStorageService]
+    Service --> SPI[SPI Framework]
     
-    subgraph "Service Layer"
-        Upload[Upload Service]
-        Query[Query Service]
-        Meta[Metadata Service]
-        URL[URL Generator]
-    end
+    SPI --> HDFS[HDFS Driver]
+    SPI --> NFS[NFS Driver]
+    SPI --> S3[S3 Driver]
     
-    subgraph "Storage Abstraction"
-        SPI[Storage Provider Interface]
-    end
+    HDFS --> HDFSCluster[HDFS Cluster]
+    NFS --> NFSServer[NFS Server]
+    S3 --> S3Bucket[S3 Storage]
     
-    subgraph "Storage Backends"
-        HDFS[HDFS Cluster]
-        NFS[NFS Storage]
-    end
-    
-    subgraph "Metadata Storage"
-        DB[(PostgreSQL)]
-        Cache[(Redis Cache)]
-    end
-    
-    Web --> LB
-    SDK --> LB
-    API --> LB
-    
-    LB --> Auth
-    Auth --> Rate
-    Rate --> Upload
-    Rate --> Query
-    
-    Upload --> Meta
-    Query --> Meta
-    Upload --> URL
-    
-    Meta --> SPI
-    SPI --> HDFS
-    SPI --> NFS
-    
-    Meta --> DB
-    Meta --> Cache
+    Service --> Cache[Redis Cache]
+    Service --> DB[Metadata DB]
+    Service --> MQ[Message Queue]
 {% endmermaid %}
 
-### Core Components
+**💡 Interview Insight**: *When discussing system architecture, emphasize the separation of concerns - API layer handles routing and validation, service layer manages business logic, and SPI layer provides storage abstraction. This demonstrates understanding of layered architecture patterns.*
 
-**Interview Insight**: *Interviewers often ask about component responsibilities. Emphasize single responsibility principle: Upload Service handles file ingestion, Query Service manages retrieval, and Metadata Service maintains file information consistency.*
+---
 
-## Storage Provider Interface (SPI) Design
+## Architecture Design
 
-### SPI Architecture Pattern
-
-The SPI follows the Strategy pattern, allowing runtime selection of storage backends without code modification.
-
-```java
-public interface StorageProvider {
-    StorageResult store(FileMetadata metadata, InputStream fileStream);
-    InputStream retrieve(String storageKey);
-    boolean delete(String storageKey);
-    StorageHealth checkHealth();
-    StorageCapabilities getCapabilities();
-}
-
-public class StorageProviderFactory {
-    private final Map<StorageType, StorageProvider> providers;
-    
-    public StorageProvider getProvider(StorageType type) {
-        return providers.get(type);
-    }
-}
-```
-
-### Backend Implementation Comparison
-
-| Feature | HDFS | NFS | Trade-offs |
-|---------|------|-----|------------|
-| **Scalability** | Horizontal (Excellent) | Vertical (Limited) | HDFS wins for massive scale |
-| **Consistency** | Strong | Strong | Both provide strong consistency |
-| **Latency** | Higher (Network overhead) | Lower (Direct access) | NFS better for small files |
-| **Fault Tolerance** | Built-in replication | Depends on setup | HDFS has native redundancy |
-| **Cost** | Higher (Cluster management) | Lower (Simpler setup) | NFS more cost-effective for small deployments |
-
-**Interview Insight**: *When asked about storage choice, mention that HDFS excels for large files and high throughput (>100MB files), while NFS is better for low-latency access to smaller files (<10MB). The SPI allows switching based on file characteristics.*
-
-## File Upload Flow
-
-### Upload Process Flow
+### Component Interaction Flow
 
 {% mermaid sequenceDiagram %}
     participant Client
-    participant API Gateway
-    participant Upload Service
-    participant Metadata Service
-    participant Storage SPI
-    participant Storage Backend
-    participant URL Generator
+    participant SDK
+    participant Gateway
+    participant FileService
+    participant SPI
+    participant Storage
+    participant MetadataDB
     
-    Client->>API Gateway: POST /files/upload
-    API Gateway->>API Gateway: Authenticate & Rate Limit
-    API Gateway->>Upload Service: Forward Request
-    
-    Upload Service->>Upload Service: Validate File Type & Size
-    Upload Service->>Metadata Service: Generate File ID
-    Metadata Service-->>Upload Service: Return File Metadata
-    
-    Upload Service->>Storage SPI: store(metadata, stream)
-    Storage SPI->>Storage Backend: Write file data
-    Storage Backend-->>Storage SPI: Return storage key
-    Storage SPI-->>Upload Service: Return storage result
-    
-    Upload Service->>URL Generator: Generate download URL
-    URL Generator-->>Upload Service: Return signed URL
-    
-    Upload Service->>Metadata Service: Update metadata with URL
-    Upload Service-->>Client: Return upload response
+    Client->>SDK: uploadFile(file, metadata)
+    SDK->>Gateway: POST /files/upload
+    Gateway->>FileService: processUpload()
+    FileService->>SPI: store(fileData)
+    SPI->>Storage: writeFile()
+    Storage-->>SPI: fileLocation
+    SPI-->>FileService: storageResult
+    FileService->>MetadataDB: saveMetadata()
+    FileService-->>Gateway: uploadResponse
+    Gateway-->>SDK: HTTP 201 + fileUrl
+    SDK-->>Client: FileUploadResult
 {% endmermaid %}
 
-### File Type Support Strategy
+### Design Patterns Applied
+
+1. **Strategy Pattern**: SPI drivers implement different storage strategies
+2. **Factory Pattern**: Driver creation based on configuration
+3. **Template Method**: Common file operations with backend-specific implementations
+4. **Circuit Breaker**: Fault tolerance for external storage systems
+5. **Observer Pattern**: Event-driven notifications for file operations
+
+**💡 Interview Insight**: *Discussing design patterns shows architectural maturity. Mention how the Strategy pattern enables runtime switching between storage backends without code changes, which is crucial for multi-cloud deployments.*
+
+---
+
+## Core Components
+
+### 1. FileStorageService
+
+The central orchestrator managing all file operations:
 
 ```java
-public enum SupportedFileType {
-    IMAGE("image/*", 10_000_000, Arrays.asList("jpg", "png", "gif")),
-    DOCUMENT("application/*", 50_000_000, Arrays.asList("pdf", "docx", "xlsx")),
-    VIDEO("video/*", 500_000_000, Arrays.asList("mp4", "avi", "mov")),
-    ARCHIVE("application/zip", 100_000_000, Arrays.asList("zip", "tar", "gz"));
+@Service
+public class FileStorageService {
     
-    private final String mimeType;
-    private final long maxSize;
-    private final List<String> extensions;
-}
-```
-
-**Interview Insight**: *Discuss file type validation strategies. Mention both MIME type checking and magic number validation to prevent security vulnerabilities. Real-world systems often use libraries like Apache Tika for robust file type detection.*
-
-## Query and Retrieval System
-
-### Query Capabilities
-
-The query service supports multiple search patterns:
-
-```sql
--- Metadata table schema optimized for queries
-CREATE TABLE file_metadata (
-    file_id UUID PRIMARY KEY,
-    original_name VARCHAR(255) NOT NULL,
-    file_type VARCHAR(50) NOT NULL,
-    file_size BIGINT NOT NULL,
-    storage_key VARCHAR(500) NOT NULL,
-    storage_provider VARCHAR(50) NOT NULL,
-    upload_timestamp TIMESTAMP DEFAULT NOW(),
-    tags JSONB,
-    user_id UUID NOT NULL,
-    download_url VARCHAR(1000),
-    INDEX idx_user_type (user_id, file_type),
-    INDEX idx_upload_time (upload_timestamp),
-    INDEX idx_tags_gin (tags) USING GIN
-);
-```
-
-### Query API Examples
-
-```yaml
-# Query by file type
-GET /files?type=image&limit=20&offset=0
-
-# Query by date range
-GET /files?from=2024-01-01&to=2024-12-31
-
-# Query by tags (JSON query)
-GET /files?tags={"category":"documents","project":"alpha"}
-
-# Full-text search in filename
-GET /files?search=report&fuzzy=true
-```
-
-**Interview Insight**: *When discussing query optimization, mention database indexing strategies. Composite indexes on (user_id, file_type) support common access patterns, while GIN indexes on JSONB fields enable efficient tag-based queries.*
-
-## URL Generation and Security
-
-### Signed URL Strategy
-
-```java
-public class SecureURLGenerator {
-    private final String secretKey;
-    private final Duration defaultExpiry = Duration.ofHours(24);
+    @Autowired
+    private FileSystemSPIManager spiManager;
     
-    public String generateDownloadURL(FileMetadata file, Duration expiry) {
-        long expirationTime = Instant.now().plus(expiry).getEpochSecond();
+    @Autowired
+    private MetadataRepository metadataRepo;
+    
+    @Autowired
+    private CacheManager cacheManager;
+    
+    public FileUploadResult uploadFile(FileUploadRequest request) {
+        // 1. Validate file and metadata
+        validateFile(request.getFile());
         
-        String payload = String.format("%s:%s:%d", 
-            file.getFileId(), file.getStorageKey(), expirationTime);
+        // 2. Generate unique file ID
+        String fileId = generateFileId();
         
-        String signature = HMAC.calculateRFC2104HMAC(payload, secretKey);
+        // 3. Determine storage backend based on policy
+        String driverType = determineStorageBackend(request);
+        FileSystemDriver driver = spiManager.getDriver(driverType);
         
-        return String.format("/download/%s?expires=%d&signature=%s",
-            file.getFileId(), expirationTime, signature);
+        // 4. Store file using appropriate driver
+        StorageResult result = driver.store(fileId, request.getFile());
+        
+        // 5. Save metadata
+        FileMetadata metadata = createMetadata(fileId, request, result);
+        metadataRepo.save(metadata);
+        
+        // 6. Cache metadata for quick access
+        cacheManager.put(fileId, metadata);
+        
+        // 7. Generate download URL
+        String downloadUrl = generateDownloadUrl(fileId);
+        
+        return new FileUploadResult(fileId, downloadUrl, metadata);
+    }
+    
+    public FileDownloadResult downloadFile(String fileId) {
+        // Implementation with caching and fallback strategies
     }
 }
 ```
 
-### Security Considerations Flow
+### 2. Metadata Management
 
-{% mermaid flowchart %}
-    A[Client Request] --> B{Valid Signature?}
-    B -->|No| C[Return 403 Forbidden]
-    B -->|Yes| D{URL Expired?}
-    D -->|Yes| E[Return 410 Gone]
-    D -->|No| F{User Authorized?}
-    F -->|No| G[Return 403 Forbidden]
-    F -->|Yes| H[Stream File Content]
+{% mermaid erDiagram %}
+    FILE_METADATA {
+        string file_id PK
+        string original_name
+        string content_type
+        long file_size
+        string storage_backend
+        string storage_path
+        string checksum
+        timestamp created_at
+        timestamp updated_at
+        string created_by
+        json custom_attributes
+        enum status
+    }
     
-    H --> I{File Size > 100MB?}
-    I -->|Yes| J[Use Range Requests]
-    I -->|No| K[Direct Stream]
+    FILE_ACCESS_LOG {
+        string log_id PK
+        string file_id FK
+        string operation_type
+        string client_ip
+        timestamp access_time
+        boolean success
+        string error_message
+    }
+    
+    STORAGE_QUOTA {
+        string tenant_id PK
+        long total_quota
+        long used_space
+        long file_count
+        timestamp last_updated
+    }
 {% endmermaid %}
 
-**Interview Insight**: *Security is often a key interview topic. Discuss defense in depth: signed URLs prevent unauthorized access, expiration limits exposure window, and user authorization ensures proper access control. Mention that production systems often implement additional measures like rate limiting per IP and geographical restrictions.*
+**💡 Interview Insight**: *Metadata design is crucial for system scalability. Discuss partitioning strategies - file_id can be hash-partitioned, and time-based partitioning for access logs enables efficient historical data management.*
 
-## Client SDK Design
+---
+
+## SPI Framework Implementation
+
+### SPI Architecture
+
+{% mermaid classDiagram %}
+    class FileSystemDriver {
+        <<interface>>
+        +store(fileId, fileData) StorageResult
+        +retrieve(fileId) FileData
+        +delete(fileId) boolean
+        +exists(fileId) boolean
+        +generateDownloadUrl(fileId) String
+    }
+    
+    class HDFSDriver {
+        -hdfsConfig: Configuration
+        -fileSystem: FileSystem
+        +store(fileId, fileData) StorageResult
+        +retrieve(fileId) FileData
+    }
+    
+    class NFSDriver {
+        -nfsConfig: NFSConfig
+        -mountPoint: String
+        +store(fileId, fileData) StorageResult
+        +retrieve(fileId) FileData
+    }
+    
+    class S3Driver {
+        -s3Client: AmazonS3
+        -bucketName: String
+        +store(fileId, fileData) StorageResult
+        +retrieve(fileId) FileData
+    }
+    
+    class DriverFactory {
+        +createDriver(driverType) FileSystemDriver
+    }
+    
+    class SPIManager {
+        -drivers: Map~String,FileSystemDriver~
+        +getDriver(type) FileSystemDriver
+        +registerDriver(type, driver)
+    }
+    
+    FileSystemDriver <|-- HDFSDriver
+    FileSystemDriver <|-- NFSDriver
+    FileSystemDriver <|-- S3Driver
+    DriverFactory --> FileSystemDriver
+    SPIManager --> FileSystemDriver
+{% endmermaid %}
+
+### SPI Configuration
+
+```java
+// META-INF/services/com.fileservice.spi.FileSystemDriver
+com.fileservice.driver.HDFSDriver
+com.fileservice.driver.NFSDriver
+com.fileservice.driver.S3Driver
+
+@Component
+public class FileSystemSPIManager {
+    
+    private final Map<String, FileSystemDriver> drivers = new ConcurrentHashMap<>();
+    
+    @PostConstruct
+    public void initializeDrivers() {
+        ServiceLoader<FileSystemDriver> loader = 
+            ServiceLoader.load(FileSystemDriver.class);
+        
+        for (FileSystemDriver driver : loader) {
+            String driverType = driver.getDriverType();
+            drivers.put(driverType, driver);
+            logger.info("Registered driver: {}", driverType);
+        }
+    }
+    
+    public FileSystemDriver getDriver(String driverType) {
+        FileSystemDriver driver = drivers.get(driverType);
+        if (driver == null) {
+            throw new UnsupportedDriverException("Driver not found: " + driverType);
+        }
+        return driver;
+    }
+}
+```
+
+**💡 Interview Insight**: *SPI demonstrates understanding of extensibility patterns. Mention that this approach allows adding new storage backends without modifying core service code, following the Open-Closed Principle.*
+
+---
+
+## API Design
+
+### RESTful API Endpoints
+
+```yaml
+openapi: 3.0.0
+info:
+  title: File Storage Service API
+  version: 1.0.0
+
+paths:
+  /api/v1/files:
+    post:
+      summary: Upload file
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                metadata:
+                  type: object
+                storagePreference:
+                  type: string
+                  enum: [hdfs, nfs, s3]
+      responses:
+        '201':
+          description: File uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileUploadResponse'
+    
+    get:
+      summary: List files with pagination
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: size
+          in: query
+          schema:
+            type: integer
+        - name: filter
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Files retrieved successfully
+
+  /api/v1/files/{fileId}:
+    get:
+      summary: Get file metadata
+      parameters:
+        - name: fileId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File metadata retrieved
+    
+    delete:
+      summary: Delete file
+      responses:
+        '204':
+          description: File deleted successfully
+
+  /api/v1/files/{fileId}/download:
+    get:
+      summary: Download file
+      responses:
+        '200':
+          description: File content
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+components:
+  schemas:
+    FileUploadResponse:
+      type: object
+      properties:
+        fileId:
+          type: string
+        downloadUrl:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/FileMetadata'
+```
+
+### Request/Response Flow
+
+```mermaid
+flowchart TD
+    A[Client Request] --> B{Request Validation}
+    B -->|Valid| C[Authentication & Authorization]
+    B -->|Invalid| D[Return 400 Bad Request]
+    
+    C -->|Authorized| E[Route to Service]
+    C -->|Unauthorized| F[Return 401/403]
+    
+    E --> G[Business Logic Processing]
+    G --> H{Storage Operation}
+    
+    H -->|Success| I[Update Metadata]
+    H -->|Failure| J[Rollback & Error Response]
+    
+    I --> K[Generate Response]
+    K --> L[Return Success Response]
+    
+    J --> M[Return Error Response]
+```
+
+**💡 Interview Insight**: *API design considerations include idempotency for upload operations, proper HTTP status codes, and consistent error response format. Discuss rate limiting and API versioning strategies for production systems.*
+
+---
+
+## Client SDK
 
 ### SDK Architecture
 
 ```java
 public class FileStorageClient {
-    private final String baseUrl;
-    private final String apiKey;
-    private final HttpClient httpClient;
     
-    // Fluent interface for uploads
-    public UploadBuilder upload() {
-        return new UploadBuilder(this);
+    private final String baseUrl;
+    private final HttpClient httpClient;
+    private final AuthenticationProvider authProvider;
+    private final RetryPolicy retryPolicy;
+    
+    public FileStorageClient(FileStorageConfig config) {
+        this.baseUrl = config.getBaseUrl();
+        this.httpClient = createHttpClient(config);
+        this.authProvider = new AuthenticationProvider(config);
+        this.retryPolicy = RetryPolicy.exponentialBackoff();
     }
     
-    // Simple query interface
-    public CompletableFuture<List<FileInfo>> queryFiles(QueryRequest request) {
+    public CompletableFuture<FileUploadResult> uploadFileAsync(
+            String filePath, 
+            FileUploadOptions options) {
+        
         return CompletableFuture.supplyAsync(() -> {
-            // Async HTTP call implementation
+            try {
+                return uploadFileInternal(filePath, options);
+            } catch (Exception e) {
+                throw new FileStorageException("Upload failed", e);
+            }
         });
     }
     
-    // Streaming download
-    public InputStream downloadFile(String fileId) throws IOException {
-        // Handle signed URL retrieval and streaming
+    public FileDownloadResult downloadFile(String fileId, String destPath) {
+        return retryPolicy.execute(() -> {
+            HttpRequest request = buildDownloadRequest(fileId);
+            HttpResponse<byte[]> response = httpClient.send(request, 
+                HttpResponse.BodyHandlers.ofByteArray());
+            
+            if (response.statusCode() == 200) {
+                Files.write(Paths.get(destPath), response.body());
+                return new FileDownloadResult(fileId, destPath);
+            } else {
+                throw new FileStorageException("Download failed: " + response.statusCode());
+            }
+        });
     }
 }
-
-// Usage example
-FileStorageClient client = FileStorageClient.builder()
-    .baseUrl("https://api.filestorage.com")
-    .apiKey("your-api-key")
-    .build();
-
-// Upload with builder pattern
-UploadResult result = client.upload()
-    .file(new File("document.pdf"))
-    .tags(Map.of("project", "alpha", "type", "report"))
-    .execute();
 ```
 
-### SDK Features Matrix
+### SDK Features
 
-| Feature | Java SDK | Python SDK | JavaScript SDK | Go SDK |
-|---------|----------|------------|----------------|--------|
-| **Async Upload** | ✅ CompletableFuture | ✅ asyncio | ✅ Promise | ✅ goroutines |
-| **Progress Tracking** | ✅ Callback | ✅ Callback | ✅ Event listener | ✅ Channel |
-| **Retry Logic** | ✅ Exponential backoff | ✅ Tenacity | ✅ axios-retry | ✅ Custom retry |
-| **Streaming** | ✅ InputStream | ✅ Generator | ✅ ReadableStream | ✅ io.Reader |
-| **Connection Pooling** | ✅ Built-in | ✅ aiohttp | ✅ axios | ✅ http.Client |
+1. **Async Operations**: Non-blocking file operations
+2. **Retry Logic**: Exponential backoff with jitter
+3. **Progress Tracking**: Upload/download progress callbacks
+4. **Connection Pooling**: Efficient HTTP connection management
+5. **Error Handling**: Comprehensive exception hierarchy
 
-**Interview Insight**: *SDK design questions often focus on usability vs. flexibility. Emphasize progressive disclosure: simple methods for basic use cases, builder patterns for complex scenarios, and callback interfaces for advanced features like progress tracking.*
-
-## Scalability and Performance
-
-### Performance Optimization Strategies
-
-{% mermaid graph %}
-    subgraph "Upload Optimization"
-        A[Multipart Upload] --> B[Parallel Processing]
-        B --> C[Checksum Verification]
-    end
-    
-    subgraph "Storage Optimization"
-        D[File Deduplication] --> E[Compression]
-        E --> F[Tiered Storage]
-    end
-    
-    subgraph "Retrieval Optimization"
-        G[CDN Integration] --> H[Cache Headers]
-        H --> I[Range Requests]
-    end
-{% endmermaid %}
-
-### Key Performance Metrics
-
-| Metric | Target | Monitoring | Optimization Strategy |
-|--------|--------|------------|----------------------|
-| **Upload Latency** | < 5s for 100MB | P99 latency | Multipart upload, regional endpoints |
-| **Query Response** | < 200ms | Average response time | Database indexing, query optimization |
-| **Download Speed** | > 10MB/s | Throughput monitoring | CDN, connection pooling |
-| **Availability** | 99.9% | Uptime monitoring | Multi-region deployment, circuit breakers |
-
-**Interview Insight**: *Performance discussions should cover both vertical and horizontal scaling. Mention specific techniques: database read replicas for query scaling, CDN for download performance, and asynchronous processing for upload handling. Always tie metrics to business impact.*
-
-## Monitoring and Observability
-
-### Observability Stack
-
-```yaml
-# Metrics Collection
-metrics:
-  - upload_requests_total{status, file_type}
-  - upload_duration_seconds{percentile}
-  - storage_usage_bytes{provider}
-  - download_requests_total{status}
-  - active_connections_gauge
-
-# Logging Structure
-logs:
-  format: structured_json
-  fields:
-    - timestamp
-    - level
-    - service
-    - request_id
-    - user_id
-    - file_id
-    - operation
-    - duration_ms
-    - error_code
-
-# Distributed Tracing
-tracing:
-  spans:
-    - http_request
-    - file_validation
-    - storage_write
-    - metadata_update
-    - url_generation
-```
-
-### Alert Conditions
-
-```yaml
-alerts:
-  - name: HighUploadLatency
-    condition: upload_duration_p99 > 10s for 5m
-    severity: warning
-    
-  - name: StorageProviderDown
-    condition: storage_health_check == 0
-    severity: critical
-    
-  - name: MetadataDBConnectionLoss
-    condition: db_connections_active == 0 for 1m
-    severity: critical
-```
-
-**Interview Insight**: *Observability questions test system thinking. Discuss the three pillars: metrics for quantitative analysis, logs for debugging, and traces for understanding request flow. Mention that good observability enables proactive issue detection and faster incident resolution.*
-
-## Deployment and Operations
-
-### Deployment Architecture
-
-{% mermaid graph %}
-    subgraph "Production Environment"
-        subgraph "Region A (Primary)"
-            LB1[Load Balancer]
-            API1[API Cluster]
-            DB1[(Primary DB)]
-            HDFS1[HDFS Cluster A]
-        end
-        
-        subgraph "Region B (Secondary)"
-            LB2[Load Balancer]
-            API2[API Cluster]
-            DB2[(Read Replica)]
-            HDFS2[HDFS Cluster B]
-        end
-    end
-    
-    subgraph "Global Services"
-        CDN[Global CDN]
-        DNS[DNS Service]
-        Monitor[Monitoring Stack]
-    end
-    
-    DNS --> LB1
-    DNS --> LB2
-    CDN --> LB1
-    CDN --> LB2
-    DB1 --> DB2
-    HDFS1 -.-> HDFS2
-{% endmermaid %}
-
-### Operational Runbooks
-
-**Critical Procedures**:
-
-1. **Storage Provider Failover**
-   ```bash
-   # Detect failure
-   kubectl get pods -l app=storage-provider
-   
-   # Switch traffic
-   kubectl patch configmap storage-config --patch '{"data":{"primary-provider":"nfs"}}'
-   
-   # Verify health
-   curl -f http://api/health/storage
-   ```
-
-2. **Database Maintenance**
-   ```sql
-   -- Before maintenance window
-   SELECT pg_start_backup('maintenance');
-   
-   -- After maintenance
-   SELECT pg_stop_backup();
-   ```
-
-**Interview Insight**: *Operations questions assess production readiness. Discuss automation over manual processes, emphasize monitoring-driven operations, and mention that good systems are designed for operability from day one. Include disaster recovery planning and capacity management.*
-
-## Security Architecture
-
-### Security Layers
-
-{% mermaid graph %}
-    A[Client Request] --> B[WAF/DDoS Protection]
-    B --> C[API Gateway Authentication]
-    C --> D[Service-to-Service mTLS]
-    D --> E[RBAC Authorization]
-    E --> F[Data Encryption at Rest]
-    F --> G[Audit Logging]
-{% endmermaid %}
-
-### Security Controls
-
-| Layer | Control | Implementation |
-|-------|---------|----------------|
-| **Network** | TLS 1.3, VPC isolation | Infrastructure level |
-| **API** | OAuth 2.0, Rate limiting | API Gateway |
-| **Application** | Input validation, CSRF protection | Service level |
-| **Data** | AES-256 encryption, Key rotation | Storage level |
-| **Audit** | Comprehensive logging, SIEM integration | Cross-cutting |
-
-**Interview Insight**: *Security discussions should cover defense in depth. Mention that security isn't just about preventing breaches, but also about detection, response, and recovery. Discuss compliance requirements (GDPR, HIPAA) and how they influence design decisions.*
-
-## Cost Optimization
-
-### Cost Structure Analysis
-
-```yaml
-cost_breakdown:
-  storage:
-    hdfs_cluster: "$2000/month (3 nodes)"
-    nfs_storage: "$500/month (5TB)"
-  compute:
-    api_services: "$1500/month (6 instances)"
-    metadata_db: "$800/month (RDS)"
-  network:
-    cdn_costs: "$300/month"
-    data_transfer: "$200/month"
-  total_monthly: "$5300"
-```
-
-### Optimization Strategies
-
-1. **Storage Tiering**: Move infrequently accessed files to cheaper storage
-2. **Compression**: Reduce storage costs by 30-50% for text/document files
-3. **Deduplication**: Eliminate redundant file storage
-4. **CDN Optimization**: Cache frequently downloaded files
-5. **Auto-scaling**: Scale compute resources based on demand
-
-**Interview Insight**: *Cost optimization shows business acumen. Discuss how technical decisions impact costs: storage choice affects monthly bills, caching reduces bandwidth costs, and proper sizing prevents over-provisioning. Mention tools like AWS Cost Explorer for monitoring.*
-
-## Future Enhancements
-
-### Roadmap Considerations
-
-**Phase 2 Features**:
-- **Advanced Search**: Full-text search with Elasticsearch integration
-- **File Processing**: Thumbnail generation, document conversion
-- **Analytics**: Usage patterns, storage optimization recommendations
-- **Collaboration**: File sharing, version control, collaborative editing
-
-**Phase 3 Features**:
-- **Machine Learning**: Automated tagging, content analysis
-- **Edge Computing**: Edge storage for global performance
-- **Blockchain**: Immutable audit trails for compliance
-- **GraphQL API**: More flexible query interface
-
-### Technical Evolution
-
-{% mermaid timeline %}
-    title File Storage Service Evolution
-    
-    Phase 1 (MVP) : Basic upload/download
-                  : Single storage backend
-                  : Simple REST API
-    
-    Phase 2 (Scale) : Multi-backend SPI
-                    : Advanced queries
-                    : Client SDKs
-    
-    Phase 3 (Intelligence) : ML-powered features
-                           : Real-time processing
-                           : Advanced analytics
-    
-    Phase 4 (Ecosystem) : Third-party integrations
-                        : Marketplace
-                        : Advanced workflows
-{% endmermaid %}
-
-**Interview Insight**: *Roadmap discussions demonstrate strategic thinking. Show how current architecture supports future features: the SPI enables new storage backends, event-driven architecture supports real-time processing, and microservices enable independent feature development.*
-
-## Interview Deep-Dive Topics
-
-### System Design Questions
-
-**Common Questions and Approach**:
-
-1. **"How would you handle a file upload of 10GB?"**
-   - Discuss multipart uploads, resumable uploads
-   - Mention client-side checksums and server verification
-   - Cover progress tracking and error recovery
-
-2. **"What happens if the storage backend fails during upload?"**
-   - Explain circuit breaker pattern
-   - Discuss backup storage providers
-   - Cover cleanup of partial uploads
-
-3. **"How do you ensure data consistency across replicas?"**
-   - Compare strong vs eventual consistency
-   - Discuss conflict resolution strategies
-   - Mention vector clocks or timestamps
-
-### Code Implementation Questions
-
-**Sample Implementation Challenge**:
 ```java
-// Implement a retry mechanism for file uploads
-public class RetryableUploadClient {
-    public CompletableFuture<UploadResult> uploadWithRetry(
-        File file, RetryPolicy policy) {
-        // Your implementation here
-        // Consider: exponential backoff, circuit breaker, 
-        // partial upload resume
+// Usage Example
+FileStorageClient client = new FileStorageClient(config);
+
+// Async upload with progress tracking
+CompletableFuture<FileUploadResult> future = client.uploadFileAsync(
+    "large-file.zip",
+    FileUploadOptions.builder()
+        .storageBackend("hdfs")
+        .progressCallback(progress -> 
+            System.out.println("Upload progress: " + progress.getPercentage() + "%"))
+        .build()
+);
+
+future.thenAccept(result -> {
+    System.out.println("File uploaded: " + result.getDownloadUrl());
+});
+```
+
+**💡 Interview Insight**: *SDK design demonstrates client-side engineering skills. Discuss thread safety, connection pooling, and how to handle large file uploads with chunking and resume capabilities.*
+
+---
+
+## Storage Backends
+
+### HDFS Integration
+
+```java
+@Component
+public class HDFSDriver implements FileSystemDriver {
+    
+    private final FileSystem hdfsFileSystem;
+    private final Configuration hadoopConfig;
+    
+    @Override
+    public StorageResult store(String fileId, FileData fileData) {
+        Path hdfsPath = new Path("/fileservice/" + generatePath(fileId));
+        
+        try (FSDataOutputStream outputStream = hdfsFileSystem.create(hdfsPath)) {
+            IOUtils.copyBytes(fileData.getInputStream(), outputStream, 4096, false);
+            
+            FileStatus fileStatus = hdfsFileSystem.getFileStatus(hdfsPath);
+            
+            return StorageResult.builder()
+                .fileId(fileId)
+                .storagePath(hdfsPath.toString())
+                .size(fileStatus.getLen())
+                .checksum(calculateChecksum(fileData))
+                .build();
+                
+        } catch (IOException e) {
+            throw new StorageException("HDFS store failed", e);
+        }
+    }
+    
+    @Override
+    public FileData retrieve(String fileId) {
+        Path hdfsPath = getPathFromFileId(fileId);
+        
+        try {
+            FSDataInputStream inputStream = hdfsFileSystem.open(hdfsPath);
+            return new FileData(inputStream, hdfsFileSystem.getFileStatus(hdfsPath).getLen());
+        } catch (IOException e) {
+            throw new StorageException("HDFS retrieve failed", e);
+        }
+    }
+    
+    private String generatePath(String fileId) {
+        // Generate hierarchical path: /2023/12/15/abc123...
+        return String.format("%s/%s/%s/%s", 
+            LocalDate.now().getYear(),
+            LocalDate.now().getMonthValue(),
+            LocalDate.now().getDayOfMonth(),
+            fileId);
     }
 }
 ```
 
-**Interview Insight**: *Code questions test practical skills. Focus on error handling, edge cases, and production considerations. Discuss trade-offs between complexity and reliability. Show awareness of real-world constraints like network timeouts and resource limits.*
+### NFS Integration
 
-## Conclusion
+```java
+@Component  
+public class NFSDriver implements FileSystemDriver {
+    
+    private final String mountPoint;
+    private final FileSystem nfsFileSystem;
+    
+    @Override
+    public StorageResult store(String fileId, FileData fileData) {
+        Path nfsPath = Paths.get(mountPoint, generatePath(fileId));
+        
+        try {
+            Files.createDirectories(nfsPath.getParent());
+            
+            try (InputStream input = fileData.getInputStream();
+                 OutputStream output = Files.newOutputStream(nfsPath)) {
+                
+                long bytesTransferred = input.transferTo(output);
+                
+                return StorageResult.builder()
+                    .fileId(fileId)
+                    .storagePath(nfsPath.toString())
+                    .size(bytesTransferred)
+                    .checksum(calculateChecksum(nfsPath))
+                    .build();
+            }
+        } catch (IOException e) {
+            throw new StorageException("NFS store failed", e);
+        }
+    }
+}
+```
 
-This file storage service design balances scalability, reliability, and maintainability through well-defined interfaces, robust error handling, and comprehensive observability. The SPI pattern provides flexibility for storage backends while maintaining a consistent API surface. The design supports both current requirements and future enhancements through modular architecture and event-driven patterns.
+### Storage Selection Strategy
 
-**Key Success Factors**:
-- **Modularity**: Clear separation of concerns enables independent scaling
-- **Flexibility**: SPI pattern supports diverse storage requirements
-- **Observability**: Comprehensive monitoring enables proactive operations
-- **Security**: Defense-in-depth protects sensitive data
-- **Performance**: Optimization at every layer ensures good user experience
+{% mermaid flowchart %}
+    A[File Upload Request] --> B{File Size Check}
+    B -->|< 100MB| C{Performance Priority?}
+    B -->|> 100MB| D{Durability Priority?}
+    
+    C -->|Yes| E[NFS - Low Latency]
+    C -->|No| F[HDFS - Cost Effective]
+    
+    D -->|Yes| G[HDFS - Replication]
+    D -->|No| H[S3 - Archival]
+    
+    E --> I[Store in NFS]
+    F --> J[Store in HDFS]
+    G --> J
+    H --> K[Store in S3]
+{% endmermaid %}
 
-The architecture presented here has been proven in production environments handling millions of files and petabytes of data, providing a solid foundation for enterprise file storage requirements.
+**💡 Interview Insight**: *Storage selection demonstrates understanding of trade-offs. NFS offers low latency but limited scalability, HDFS provides distributed storage with replication, S3 offers infinite scale but higher latency. Discuss when to use each based on access patterns.*
+
+---
+
+## Security & Performance
+
+### Security Implementation
+
+```java
+@RestController
+@RequestMapping("/api/v1/files")
+@PreAuthorize("hasRole('FILE_USER')")
+public class FileController {
+    
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("@fileSecurityService.canUpload(authentication.name, #request.storageBackend)")
+    public ResponseEntity<FileUploadResponse> uploadFile(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam("metadata") String metadata,
+            FileUploadRequest request) {
+        
+        // Validate file type and size
+        fileValidationService.validateFile(file);
+        
+        // Scan for malware
+        if (!malwareScanService.isFileSafe(file)) {
+            throw new SecurityException("File failed security scan");
+        }
+        
+        FileUploadResult result = fileStorageService.uploadFile(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(result);
+    }
+}
+
+@Service
+public class FileSecurityService {
+    
+    public boolean canUpload(String username, String storageBackend) {
+        UserPermissions permissions = userService.getPermissions(username);
+        return permissions.hasStorageAccess(storageBackend);
+    }
+    
+    public String generateSignedUrl(String fileId, Duration expiry) {
+        String token = jwtService.createToken(
+            Map.of("fileId", fileId, "action", "download"),
+            expiry
+        );
+        return baseUrl + "/files/" + fileId + "/download?token=" + token;
+    }
+}
+```
+
+### Performance Optimizations
+
+1. **Connection Pooling**: HTTP and database connection pools
+2. **Caching Strategy**: Multi-level caching (Redis + Local)
+3. **Async Processing**: Non-blocking I/O operations
+4. **Compression**: Automatic compression for large files
+5. **CDN Integration**: Geographic distribution for downloads
+
+```java
+@Configuration
+public class PerformanceConfig {
+    
+    @Bean
+    public ThreadPoolTaskExecutor fileProcessingExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(50);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("file-processor-");
+        return executor;
+    }
+    
+    @Bean
+    public CacheManager cacheManager() {
+        RedisCacheManager.Builder builder = RedisCacheManager
+            .RedisCacheManagerBuilder
+            .fromConnectionFactory(redisConnectionFactory())
+            .cacheDefaults(cacheConfiguration());
+        return builder.build();
+    }
+}
+```
+
+**💡 Interview Insight**: *Performance discussions should cover caching strategies (what to cache, cache invalidation), connection pooling, and async processing. Mention specific metrics like P99 latency targets and throughput requirements.*
+
+---
+
+## Monitoring & Operations
+
+### Metrics and Monitoring
+
+```java
+@Component
+public class FileStorageMetrics {
+    
+    private final Counter uploadCounter = Counter.builder("file.uploads.total")
+        .description("Total file uploads")
+        .tag("storage_backend", "")
+        .register(Metrics.globalRegistry);
+    
+    private final Timer uploadTimer = Timer.builder("file.upload.duration")
+        .description("File upload duration")
+        .register(Metrics.globalRegistry);
+    
+    private final Gauge storageUsage = Gauge.builder("storage.usage.bytes")
+        .description("Storage usage by backend")
+        .tag("backend", "")
+        .register(Metrics.globalRegistry, this, FileStorageMetrics::getStorageUsage);
+    
+    public void recordUpload(String backend, Duration duration) {
+        uploadCounter.increment(Tags.of("storage_backend", backend));
+        uploadTimer.record(duration);
+    }
+}
+```
+
+### Health Checks
+
+```java
+@Component
+public class FileStorageHealthIndicator implements HealthIndicator {
+    
+    @Override
+    public Health health() {
+        Health.Builder status = new Health.Builder();
+        
+        // Check storage backends
+        for (String backend : spiManager.getAvailableBackends()) {
+            try {
+                FileSystemDriver driver = spiManager.getDriver(backend);
+                boolean healthy = driver.healthCheck();
+                status.withDetail(backend, healthy ? "UP" : "DOWN");
+            } catch (Exception e) {
+                status.withDetail(backend, "ERROR: " + e.getMessage());
+            }
+        }
+        
+        return status.up().build();
+    }
+}
+```
+
+### Observability Dashboard
+
+{% mermaid graph LR %}
+    subgraph "Application Metrics"
+        A[Upload Rate]
+        B[Download Rate]
+        C[Error Rate]
+        D[Response Time]
+    end
+    
+    subgraph "Infrastructure Metrics"
+        E[CPU Usage]
+        F[Memory Usage]
+        G[Disk I/O]
+        H[Network I/O]
+    end
+    
+    subgraph "Business Metrics"
+        I[Storage Usage]
+        J[Active Users]
+        K[File Types]
+        L[Storage Costs]
+    end
+    
+    A --> M[Grafana Dashboard]
+    B --> M
+    C --> M
+    D --> M
+    E --> M
+    F --> M
+    G --> M
+    H --> M
+    I --> M
+    J --> M
+    K --> M
+    L --> M
+{% endmermaid %}
+
+**💡 Interview Insight**: *Observability is crucial for production systems. Discuss the difference between metrics (quantitative), logs (qualitative), and traces (request flow). Mention SLA/SLO concepts and how monitoring supports them.*
+
+---
+
+## Deployment Strategy
+
+### Containerized Deployment
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  file-storage-service:
+    image: file-storage-service:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=production
+      - STORAGE_BACKENDS=hdfs,nfs,s3
+    volumes:
+      - ./config:/app/config
+    depends_on:
+      - redis
+      - postgres
+      
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+      
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: fileservice
+      POSTGRES_USER: fileuser
+      POSTGRES_PASSWORD: filepass
+```
+
+### Kubernetes Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: file-storage-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: file-storage-service
+  template:
+    metadata:
+      labels:
+        app: file-storage-service
+    spec:
+      containers:
+      - name: file-storage-service
+        image: file-storage-service:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: STORAGE_BACKENDS
+          value: "hdfs,s3"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+```
+
+### Scaling Strategy
+
+{% mermaid graph TD %}
+    A[Load Balancer] --> B[File Service Instance 1]
+    A --> C[File Service Instance 2]
+    A --> D[File Service Instance N]
+    
+    B --> E[Storage Backend Pool]
+    C --> E
+    D --> E
+    
+    E --> F[HDFS Cluster]
+    E --> G[NFS Servers]
+    E --> H[S3 Storage]
+    
+    I[Auto Scaler] --> A
+    I --> B
+    I --> C
+    I --> D
+{% endmermaid %}
+
+**💡 Interview Insight**: *Deployment discussions should cover horizontal vs vertical scaling, stateless service design, and data partitioning strategies. Mention circuit breakers for external dependencies and graceful degradation patterns.*
+
+---
+
+## Interview Key Points Summary
+
+### System Design Fundamentals
+- **Scalability**: Horizontal scaling through stateless services
+- **Reliability**: Circuit breakers, retries, and failover mechanisms
+- **Consistency**: Eventual consistency for metadata with strong consistency for file operations
+- **Availability**: Multi-region deployment with data replication
+
+### Technical Deep Dives
+- **SPI Pattern**: Demonstrates extensibility and loose coupling
+- **Caching Strategy**: Multi-level caching with proper invalidation
+- **Security**: Authentication, authorization, and file validation
+- **Monitoring**: Metrics, logging, and distributed tracing
+
+### Trade-offs and Decisions
+- **Storage Selection**: Performance vs cost vs durability
+- **Consistency Models**: CAP theorem considerations
+- **API Design**: REST vs GraphQL vs gRPC
+- **Technology Choices**: Java ecosystem vs alternatives
+
+### Production Readiness
+- **Operations**: Deployment, monitoring, and incident response
+- **Performance**: Benchmarking and optimization strategies
+- **Security**: Threat modeling and security testing
+- **Compliance**: Data protection and regulatory requirements
+
+This comprehensive design demonstrates understanding of distributed systems, software architecture patterns, and production engineering practices essential for senior engineering roles.
