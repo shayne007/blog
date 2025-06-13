@@ -1,5 +1,5 @@
 ---
-title: 'Design Modern Privilege Systems: RBAC + ABAC Integration Guide'
+title: 'Design Privilege Systems: RBAC + ABAC Integration Guide'
 date: 2025-06-12 17:52:06
 tags: [system-design, privilege system]
 categories: [system-design]
