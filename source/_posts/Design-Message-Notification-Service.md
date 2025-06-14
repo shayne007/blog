@@ -11,8 +11,7 @@ The Message Notification Service is a scalable, multi-channel notification platf
 
 **Interview Insight**: When discussing notification systems, emphasize the trade-offs between consistency and availability. For notifications, we typically choose availability over strict consistency since delayed delivery is preferable to no delivery.
 
-```mermaid
-graph TB
+{% mermaid graph TB %}
     A[Business Services] --> B[MessageNotificationSDK]
     B --> C[API Gateway]
     C --> D[Message Service]
@@ -26,7 +25,7 @@ graph TB
     F --> L[Delivery Tracker]
     L --> M[Analytics DB]
     D --> N[Message Store]
-```
+{% endmermaid %}
 
 ## Core Architecture Components
 
@@ -72,8 +71,7 @@ The system uses Apache Kafka for high-throughput message processing with the fol
 - `notification.retry` - Failed message retries
 - `notification.dlq` - Dead letter queue for permanent failures
 
-```mermaid
-flowchart LR
+{% mermaid flowchart LR %}
     A[API Gateway] --> B[Message Validator]
     B --> C{Message Type}
     C -->|Immediate| D[notification.immediate]
@@ -87,7 +85,7 @@ flowchart LR
     H --> K[Email Provider]
     I --> L[SMS Provider]
     J --> M[WeChat API]
-```
+{% endmermaid %}
 
 **Interview Insight**: Explain partitioning strategy - partition by user ID for ordered processing per user, or by message type for parallel processing. The choice depends on whether message ordering matters for your use case.
 
@@ -140,8 +138,7 @@ To handle 10 million messages daily (approximately 116 messages/second average, 
 - Batch processing for similar notifications
 - Asynchronous processing with circuit breakers
 
-```mermaid
-sequenceDiagram
+{% mermaid sequenceDiagram %}
     participant BS as Business Service
     participant SDK as Notification SDK
     participant API as API Gateway
@@ -161,7 +158,7 @@ sequenceDiagram
     CP->>EP: Send email
     EP-->>CP: Delivery status
     CP->>MQ: Update delivery status
-```
+{% endmermaid %}
 
 **Interview Insight**: Discuss the CAP theorem application - in notification systems, we choose availability and partition tolerance over consistency. It's better to potentially send a duplicate notification than to miss sending one entirely.
 
@@ -264,8 +261,7 @@ public class WeChatChannelProcessor implements ChannelProcessor {
 
 ### Scheduler Service Architecture
 
-```mermaid
-flowchart TD
+{% mermaid flowchart TD %}
     A[Scheduled Messages] --> B[Time-based Partitioner]
     B --> C[Quartz Scheduler Cluster]
     C --> D[Message Trigger]
@@ -274,7 +270,7 @@ flowchart TD
     E -->|No| G[Reschedule]
     F --> H[Channel Processors]
     G --> A
-```
+{% endmermaid %}
 
 **Delivery Window Management**:
 - Timezone-aware scheduling
@@ -382,8 +378,7 @@ notification:
 - Opt-out rates by channel
 - Cost per notification by channel
 
-```mermaid
-graph LR
+{% mermaid graph LR %}
     A[Notification Service] --> B[Metrics Collector]
     B --> C[Prometheus]
     C --> D[Grafana Dashboard]
@@ -391,7 +386,7 @@ graph LR
     E --> F[ELK Stack]
     B --> G[Distributed Tracing]
     G --> H[Jaeger]
-```
+{% endmermaid %}
 
 ### Alerting Strategy
 
