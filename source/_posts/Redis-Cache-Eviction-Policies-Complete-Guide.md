@@ -1,5 +1,5 @@
 ---
-title: Redis Memory Eviction Policies - Complete Guide
+title: Redis Cache Eviction Policies - Complete Guide
 date: 2025-06-18 20:51:32
 tags: [redis]
 categories: [redis]
@@ -354,7 +354,7 @@ end
 return evict_small_objects(tonumber(ARGV[1]))
 ```
 
-### Low Cost Evict First Strategy
+### Low-Cost Evict First Strategy
 
 Evicts data that's cheap to regenerate or reload.
 

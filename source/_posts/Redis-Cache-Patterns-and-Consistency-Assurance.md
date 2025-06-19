@@ -1,5 +1,5 @@
 ---
-title: Redis Caching Patterns and Consistency Assurance
+title: Redis Cache Patterns and Consistency Assurance
 date: 2025-06-10 18:47:55
 tags: [redis]
 categories: [redis]
