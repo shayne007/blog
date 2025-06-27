@@ -5,208 +5,241 @@ tags: [system-design, async invocation]
 categories: [system-design]
 ---
 
-## Executive Summary
+## Overview and Architecture
 
-This document outlines a comprehensive Database SDK design for a multi-tenant SaaS platform that supports dynamic database creation, runtime datasource switching, and multi-database backends through an SPI (Service Provider Interface) mechanism.
+A Multi-Tenant Database SDK is a critical component in modern SaaS architectures that enables applications to dynamically manage database connections and operations across multiple tenants. This SDK provides a unified interface for database operations while maintaining tenant isolation and optimizing resource utilization through connection pooling and runtime datasource switching.
 
-**Key Features:**
-- Dynamic database and table creation per tenant
-- Runtime datasource switching
-- MySQL and PostgreSQL support via SPI
-- Connection pooling and performance optimization
-- Schema migration management
-- Security and isolation guarantees
-
----
-
-## Architecture Overview
-
-### High-Level Architecture
+### Core Architecture Components
 
 {% mermaid graph TB %}
-    subgraph "Application Layer"
-        A[SaaS Services] --> B[Database SDK]
-    end
+    A[SaaS Application] --> B[Multi-Tenant SDK]
+    B --> C[Tenant Context Manager]
+    B --> D[Connection Pool Manager]
+    B --> E[Database Provider Factory]
     
-    subgraph "SDK Core"
-        B --> C[Connection Manager]
-        B --> D[Schema Manager]
-        B --> E[Query Builder]
-        B --> F[Migration Engine]
-    end
+    C --> F[ThreadLocal Storage]
+    D --> G[MySQL Connection Pool]
+    D --> H[PostgreSQL Connection Pool]
     
-    subgraph "SPI Layer"
-        C --> G[MySQL Provider]
-        C --> H[PostgreSQL Provider]
-        D --> G
-        D --> H
-    end
+    E --> I[MySQL Provider]
+    E --> J[PostgreSQL Provider]
     
-    subgraph "Database Layer"
-        G --> I[(MySQL Clusters)]
-        H --> J[(PostgreSQL Clusters)]
-    end
+    I --> K[(MySQL Database)]
+    J --> L[(PostgreSQL Database)]
     
-    subgraph "Configuration"
-        K[Tenant Registry] --> C
-        L[Connection Pools] --> C
-    end
+    B --> M[SPI Registry]
+    M --> N[Database Provider Interface]
+    N --> I
+    N --> J
 {% endmermaid %}
 
-### Core Components
+**Interview Insight**: *"How would you design a multi-tenant database architecture?"*
 
-The SDK architecture follows a layered approach with clear separation of concerns:
+The key is to balance tenant isolation with resource efficiency. Our SDK uses a **database-per-tenant** approach with dynamic datasource switching, which provides strong isolation while maintaining performance through connection pooling.
 
-1. **API Layer**: Provides high-level abstractions for database operations
-2. **Core Engine**: Handles connection management, schema operations, and query execution
-3. **SPI Layer**: Enables pluggable database providers
-4. **Provider Implementations**: Database-specific implementations for MySQL and PostgreSQL
+## Tenant Context Management
 
-**Interview Insight**: *When discussing architecture, emphasize the importance of abstraction layers. This design allows adding new database types without changing client code, demonstrating understanding of the Open/Closed Principle.*
+### ThreadLocal Implementation
 
----
-
-## Database SDK Core Design
-
-### Main SDK Interface
+The tenant context is stored using ThreadLocal to ensure thread-safe tenant identification throughout the request lifecycle.
 
 ```java
-public interface DatabaseSDK {
-    // Tenant management
-    TenantContext createTenant(String tenantId, DatabaseConfig config);
-    boolean switchToTenant(String tenantId);
-    TenantContext getCurrentTenant();
+public class TenantContext {
+    private static final ThreadLocal<String> TENANT_ID = new ThreadLocal<>();
+    private static final ThreadLocal<String> DATABASE_NAME = new ThreadLocal<>();
     
-    // Schema operations
-    void createDatabase(String databaseName);
-    void createTable(String tableName, TableSchema schema);
-    void dropTable(String tableName);
+    public static void setTenant(String tenantId) {
+        TENANT_ID.set(tenantId);
+        DATABASE_NAME.set("tenant_" + tenantId);
+    }
     
-    // Query operations
-    QueryBuilder query();
-    <T> List<T> executeQuery(String sql, Class<T> resultType, Object... params);
-    int executeUpdate(String sql, Object... params);
+    public static String getCurrentTenant() {
+        return TENANT_ID.get();
+    }
     
-    // Transaction management
-    void beginTransaction();
-    void commit();
-    void rollback();
+    public static String getCurrentDatabase() {
+        return DATABASE_NAME.get();
+    }
     
-    // Migration support
-    void runMigrations(String migrationsPath);
-    MigrationStatus getMigrationStatus();
+    public static void clear() {
+        TENANT_ID.remove();
+        DATABASE_NAME.remove();
+    }
 }
 ```
 
-### Tenant Context Management
-
-{% mermaid sequenceDiagram %}
-    participant Client
-    participant SDK
-    participant TenantManager
-    participant ConnectionPool
-    participant Database
-    
-    Client->>SDK: createTenant("tenant-123", config)
-    SDK->>TenantManager: registerTenant(tenantId, config)
-    TenantManager->>Database: CREATE DATABASE tenant_123_db
-    TenantManager->>ConnectionPool: createPool(tenantId, config)
-    SDK->>Client: TenantContext
-    
-    Client->>SDK: switchToTenant("tenant-123")
-    SDK->>TenantManager: setCurrentTenant(tenantId)
-    TenantManager->>ConnectionPool: getConnection(tenantId)
-    SDK->>Client: success
-{% endmermaid %}
-
-**Interview Insight**: *Discuss the importance of thread-local storage for tenant context. This prevents cross-tenant data leakage in multi-threaded environments.*
-
----
-
-## SPI (Service Provider Interface) Implementation
-
-### Provider Architecture
+### Tenant Context Interceptor
 
 ```java
-// Core SPI interface
+@Component
+public class TenantContextInterceptor implements HandlerInterceptor {
+    
+    @Override
+    public boolean preHandle(HttpServletRequest request, 
+                           HttpServletResponse response, 
+                           Object handler) throws Exception {
+        
+        String tenantId = extractTenantId(request);
+        if (tenantId != null) {
+            TenantContext.setTenant(tenantId);
+        }
+        return true;
+    }
+    
+    @Override
+    public void afterCompletion(HttpServletRequest request, 
+                              HttpServletResponse response, 
+                              Object handler, Exception ex) {
+        TenantContext.clear();
+    }
+    
+    private String extractTenantId(HttpServletRequest request) {
+        // Extract from header, JWT token, or subdomain
+        return request.getHeader("X-Tenant-ID");
+    }
+}
+```
+
+**Interview Insight**: *"Why use ThreadLocal for tenant context?"*
+
+ThreadLocal ensures that each request thread maintains its own tenant context without interference from other concurrent requests. This is crucial in multi-threaded web applications where multiple tenants' requests are processed simultaneously.
+
+## Connection Pool Management
+
+### Dynamic DataSource Configuration
+
+```java
+@Configuration
+public class MultiTenantDataSourceConfig {
+    
+    @Bean
+    public DataSource multiTenantDataSource() {
+        MultiTenantDataSource dataSource = new MultiTenantDataSource();
+        dataSource.setDefaultTargetDataSource(createDefaultDataSource());
+        return dataSource;
+    }
+    
+    @Bean
+    public ConnectionPoolManager connectionPoolManager() {
+        return new ConnectionPoolManager();
+    }
+}
+```
+
+### Connection Pool Manager Implementation
+
+```java
+@Component
+public class ConnectionPoolManager {
+    private final Map<String, HikariDataSource> dataSources = new ConcurrentHashMap<>();
+    private final DatabaseProviderFactory providerFactory;
+    
+    public ConnectionPoolManager(DatabaseProviderFactory providerFactory) {
+        this.providerFactory = providerFactory;
+    }
+    
+    public DataSource getDataSource(String tenantId) {
+        return dataSources.computeIfAbsent(tenantId, this::createDataSource);
+    }
+    
+    private HikariDataSource createDataSource(String tenantId) {
+        TenantConfig config = getTenantConfig(tenantId);
+        DatabaseProvider provider = providerFactory.getProvider(config.getDatabaseType());
+        
+        HikariConfig hikariConfig = new HikariConfig();
+        hikariConfig.setJdbcUrl(provider.buildJdbcUrl(config));
+        hikariConfig.setUsername(config.getUsername());
+        hikariConfig.setPassword(config.getPassword());
+        hikariConfig.setMaximumPoolSize(config.getMaxPoolSize());
+        hikariConfig.setMinimumIdle(config.getMinIdle());
+        hikariConfig.setConnectionTimeout(config.getConnectionTimeout());
+        hikariConfig.setIdleTimeout(config.getIdleTimeout());
+        
+        return new HikariDataSource(hikariConfig);
+    }
+    
+    public void closeTenantDataSource(String tenantId) {
+        HikariDataSource dataSource = dataSources.remove(tenantId);
+        if (dataSource != null) {
+            dataSource.close();
+        }
+    }
+}
+```
+
+**Interview Insight**: *"How do you handle connection pool sizing for multiple tenants?"*
+
+We use adaptive pool sizing based on tenant usage patterns. Each tenant gets a dedicated connection pool with configurable min/max connections. Monitor pool metrics and adjust dynamically based on tenant activity.
+
+## Database Provider Implementation via SPI
+
+### Service Provider Interface
+
+```java
 public interface DatabaseProvider {
     String getProviderName();
-    String[] getSupportedVersions();
-    
-    Connection createConnection(DatabaseConfig config);
-    SchemaManager getSchemaManager();
-    QueryExecutor getQueryExecutor();
-    MigrationEngine getMigrationEngine();
-    
-    boolean supportsFeature(DatabaseFeature feature);
-}
-
-// Provider registration
-public class ProviderRegistry {
-    private static final Map<String, DatabaseProvider> providers = new ConcurrentHashMap<>();
-    
-    public static void registerProvider(DatabaseProvider provider) {
-        providers.put(provider.getProviderName().toLowerCase(), provider);
-    }
-    
-    public static DatabaseProvider getProvider(String name) {
-        return providers.get(name.toLowerCase());
-    }
+    String buildJdbcUrl(TenantConfig config);
+    void createTenantDatabase(TenantConfig config);
+    void createTenantTables(String tenantId, List<String> tableSchemas);
+    boolean supportsBatch();
+    String getDriverClassName();
 }
 ```
 
 ### MySQL Provider Implementation
 
 ```java
-@Provider("mysql")
-public class MySQLProvider implements DatabaseProvider {
+@Component
+public class MySQLDatabaseProvider implements DatabaseProvider {
     
     @Override
-    public Connection createConnection(DatabaseConfig config) {
-        HikariConfig hikariConfig = new HikariConfig();
-        hikariConfig.setJdbcUrl(buildJdbcUrl(config));
-        hikariConfig.setUsername(config.getUsername());
-        hikariConfig.setPassword(config.getPassword());
-        
-        // MySQL-specific optimizations
-        hikariConfig.addDataSourceProperty("cachePrepStmts", "true");
-        hikariConfig.addDataSourceProperty("prepStmtCacheSize", "250");
-        hikariConfig.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
-        
-        return new HikariDataSource(hikariConfig).getConnection();
+    public String getProviderName() {
+        return "mysql";
     }
     
     @Override
-    public SchemaManager getSchemaManager() {
-        return new MySQLSchemaManager();
+    public String buildJdbcUrl(TenantConfig config) {
+        return String.format("jdbc:mysql://%s:%d/%s?useSSL=true&serverTimezone=UTC",
+                config.getHost(), config.getPort(), config.getDatabaseName());
     }
     
-    private class MySQLSchemaManager implements SchemaManager {
-        @Override
-        public void createDatabase(String name) {
-            executeUpdate("CREATE DATABASE IF NOT EXISTS `" + name + "` " +
-                         "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    @Override
+    public void createTenantDatabase(TenantConfig config) {
+        try (Connection connection = getAdminConnection(config)) {
+            String sql = "CREATE DATABASE IF NOT EXISTS " + config.getDatabaseName() + 
+                        " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci";
+            
+            try (Statement stmt = connection.createStatement()) {
+                stmt.execute(sql);
+            }
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to create MySQL database for tenant: " + 
+                                      config.getTenantId(), e);
         }
+    }
+    
+    @Override
+    public void createTenantTables(String tenantId, List<String> tableSchemas) {
+        DataSource dataSource = connectionPoolManager.getDataSource(tenantId);
         
-        @Override
-        public void createTable(String name, TableSchema schema) {
-            StringBuilder sql = new StringBuilder("CREATE TABLE IF NOT EXISTS `")
-                .append(name).append("` (");
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
             
-            // Build column definitions with MySQL-specific types
-            schema.getColumns().forEach(col -> {
-                sql.append("`").append(col.getName()).append("` ");
-                sql.append(mapToMySQLType(col.getType()));
-                if (col.isPrimaryKey()) sql.append(" PRIMARY KEY");
-                if (col.isAutoIncrement()) sql.append(" AUTO_INCREMENT");
-                sql.append(", ");
-            });
+            for (String schema : tableSchemas) {
+                try (Statement stmt = connection.createStatement()) {
+                    stmt.execute(schema);
+                }
+            }
             
-            sql.setLength(sql.length() - 2); // Remove last comma
-            sql.append(") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-            
-            executeUpdate(sql.toString());
+            connection.commit();
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to create tables for tenant: " + tenantId, e);
         }
+    }
+    
+    @Override
+    public String getDriverClassName() {
+        return "com.mysql.cj.jdbc.Driver";
     }
 }
 ```
@@ -214,357 +247,379 @@ public class MySQLProvider implements DatabaseProvider {
 ### PostgreSQL Provider Implementation
 
 ```java
-@Provider("postgresql")
-public class PostgreSQLProvider implements DatabaseProvider {
+@Component
+public class PostgreSQLDatabaseProvider implements DatabaseProvider {
     
     @Override
-    public SchemaManager getSchemaManager() {
-        return new PostgreSQLSchemaManager();
+    public String getProviderName() {
+        return "postgresql";
     }
     
-    private class PostgreSQLSchemaManager implements SchemaManager {
-        @Override
-        public void createDatabase(String name) {
-            executeUpdate("CREATE DATABASE \"" + name + "\" " +
-                         "WITH ENCODING='UTF8' LC_COLLATE='en_US.UTF-8' LC_CTYPE='en_US.UTF-8'");
-        }
-        
-        @Override
-        public void createTable(String name, TableSchema schema) {
-            StringBuilder sql = new StringBuilder("CREATE TABLE IF NOT EXISTS \"")
-                .append(name).append("\" (");
-            
-            schema.getColumns().forEach(col -> {
-                sql.append("\"").append(col.getName()).append("\" ");
-                sql.append(mapToPostgreSQLType(col.getType()));
-                if (col.isPrimaryKey()) sql.append(" PRIMARY KEY");
-                if (col.isAutoIncrement()) sql.append(" GENERATED ALWAYS AS IDENTITY");
-                sql.append(", ");
-            });
-            
-            sql.setLength(sql.length() - 2);
-            sql.append(")");
-            
-            executeUpdate(sql.toString());
-        }
-    }
-}
-```
-
-**Interview Insight**: *Explain how SPI promotes loose coupling and enables runtime provider discovery. This is crucial for enterprise applications that need to support multiple database vendors.*
-
----
-
-## Connection Management & Pooling
-
-### Multi-Tenant Connection Architecture
-
-```mermaid
-graph LR
-    subgraph "Application Threads"
-        T1[Thread 1<br/>Tenant A]
-        T2[Thread 2<br/>Tenant B]
-        T3[Thread 3<br/>Tenant A]
-    end
-    
-    subgraph "Connection Manager"
-        CM[Connection Manager]
-        TLS[ThreadLocal<br/>TenantContext]
-    end
-    
-    subgraph "Connection Pools"
-        PA[Pool A<br/>MySQL]
-        PB[Pool B<br/>PostgreSQL]
-        PC[Pool C<br/>MySQL]
-    end
-    
-    T1 --> CM
-    T2 --> CM
-    T3 --> CM
-    CM --> TLS
-    CM --> PA
-    CM --> PB
-    CM --> PC
-```
-
-### Connection Pool Implementation
-
-```java
-public class TenantConnectionManager {
-    private final Map<String, HikariDataSource> tenantPools = new ConcurrentHashMap<>();
-    private final ThreadLocal<String> currentTenant = new ThreadLocal<>();
-    
-    public void createTenantPool(String tenantId, DatabaseConfig config) {
-        if (tenantPools.containsKey(tenantId)) {
-            throw new IllegalStateException("Tenant pool already exists: " + tenantId);
-        }
-        
-        HikariConfig hikariConfig = new HikariConfig();
-        hikariConfig.setJdbcUrl(config.getJdbcUrl());
-        hikariConfig.setUsername(config.getUsername());
-        hikariConfig.setPassword(config.getPassword());
-        
-        // Pool sizing based on tenant tier
-        TenantTier tier = config.getTier();
-        hikariConfig.setMaximumPoolSize(tier.getMaxConnections());
-        hikariConfig.setMinimumIdle(tier.getMinConnections());
-        hikariConfig.setConnectionTimeout(tier.getConnectionTimeoutMs());
-        
-        // Monitoring and health checks
-        hikariConfig.setRegisterMbeans(true);
-        hikariConfig.setHealthCheckRegistry(HealthCheckRegistry.getInstance());
-        
-        tenantPools.put(tenantId, new HikariDataSource(hikariConfig));
+    @Override
+    public String buildJdbcUrl(TenantConfig config) {
+        return String.format("jdbc:postgresql://%s:%d/%s",
+                config.getHost(), config.getPort(), config.getDatabaseName());
     }
     
-    public Connection getConnection() {
-        String tenantId = currentTenant.get();
-        if (tenantId == null) {
-            throw new IllegalStateException("No tenant context set for current thread");
-        }
-        
-        HikariDataSource pool = tenantPools.get(tenantId);
-        if (pool == null) {
-            throw new IllegalStateException("No connection pool for tenant: " + tenantId);
-        }
-        
-        try {
-            return pool.getConnection();
+    @Override
+    public void createTenantDatabase(TenantConfig config) {
+        try (Connection connection = getAdminConnection(config)) {
+            String sql = "CREATE DATABASE " + config.getDatabaseName() + 
+                        " WITH ENCODING 'UTF8' LC_COLLATE='en_US.UTF-8' LC_CTYPE='en_US.UTF-8'";
+            
+            try (Statement stmt = connection.createStatement()) {
+                stmt.execute(sql);
+            }
         } catch (SQLException e) {
-            throw new DatabaseException("Failed to get connection for tenant: " + tenantId, e);
+            throw new DatabaseException("Failed to create PostgreSQL database for tenant: " + 
+                                      config.getTenantId(), e);
         }
     }
     
-    public void switchTenant(String tenantId) {
-        if (!tenantPools.containsKey(tenantId)) {
-            throw new IllegalArgumentException("Unknown tenant: " + tenantId);
+    @Override
+    public void createTenantTables(String tenantId, List<String> tableSchemas) {
+        DataSource dataSource = connectionPoolManager.getDataSource(tenantId);
+        
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            
+            for (String schema : tableSchemas) {
+                try (Statement stmt = connection.createStatement()) {
+                    stmt.execute(schema);
+                }
+            }
+            
+            connection.commit();
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to create tables for tenant: " + tenantId, e);
         }
-        currentTenant.set(tenantId);
+    }
+    
+    @Override
+    public String getDriverClassName() {
+        return "org.postgresql.Driver";
     }
 }
 ```
 
-**Interview Insight**: *Discuss connection pool tuning strategies. Different tenant tiers might need different pool configurations based on their usage patterns and SLA requirements.*
-
----
-
-## Runtime Datasource Switching
-
-### Switching Mechanism Flow
-
-```mermaid
-flowchart TD
-    A[Service Request] --> B{Tenant ID Available?}
-    B -->|No| C[Extract from JWT/Header]
-    B -->|Yes| D[Set Thread Context]
-    C --> D
-    D --> E[Lookup Tenant Config]
-    E --> F{Pool Exists?}
-    F -->|No| G[Create New Pool]
-    F -->|Yes| H[Get Connection]
-    G --> H
-    H --> I[Execute Database Operation]
-    I --> J[Return Connection to Pool]
-    J --> K[Clear Thread Context]
-```
-
-### Implementation Example
+### SPI Registry and Factory
 
 ```java
 @Component
-public class DatabaseSDKImpl implements DatabaseSDK {
+public class DatabaseProviderFactory {
+    private final Map<String, DatabaseProvider> providers = new HashMap<>();
     
-    @Autowired
-    private TenantConnectionManager connectionManager;
+    @PostConstruct
+    public void initializeProviders() {
+        ServiceLoader<DatabaseProvider> serviceLoader = ServiceLoader.load(DatabaseProvider.class);
+        
+        for (DatabaseProvider provider : serviceLoader) {
+            providers.put(provider.getProviderName(), provider);
+        }
+    }
     
-    @Autowired
-    private TenantRegistry tenantRegistry;
+    public DatabaseProvider getProvider(String providerName) {
+        DatabaseProvider provider = providers.get(providerName.toLowerCase());
+        if (provider == null) {
+            throw new UnsupportedDatabaseException("Database provider not found: " + providerName);
+        }
+        return provider;
+    }
+    
+    public Set<String> getSupportedProviders() {
+        return providers.keySet();
+    }
+}
+```
+
+**Interview Insight**: *"Why use SPI pattern for database providers?"*
+
+SPI (Service Provider Interface) enables loose coupling and extensibility. New database providers can be added without modifying existing code, following the Open/Closed Principle. It also allows for plugin-based architecture where providers can be loaded dynamically.
+
+## Multi-Tenant Database Operations
+
+### Core SDK Interface
+
+```java
+public interface MultiTenantDatabaseSDK {
+    void createTenant(String tenantId, TenantConfig config);
+    void deleteTenant(String tenantId);
+    void executeSql(String sql, Object... params);
+    <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... params);
+    void executeBatch(List<String> sqlStatements);
+    void executeTransaction(TransactionCallback callback);
+}
+```
+
+### SDK Implementation
+
+```java
+@Service
+public class MultiTenantDatabaseSDKImpl implements MultiTenantDatabaseSDK {
+    
+    private final ConnectionPoolManager connectionPoolManager;
+    private final DatabaseProviderFactory providerFactory;
+    private final TenantConfigRepository tenantConfigRepository;
     
     @Override
-    public boolean switchToTenant(String tenantId) {
+    public void createTenant(String tenantId, TenantConfig config) {
         try {
-            TenantConfig config = tenantRegistry.getTenantConfig(tenantId);
-            if (config == null) {
-                return false;
-            }
+            // Create database
+            DatabaseProvider provider = providerFactory.getProvider(config.getDatabaseType());
+            provider.createTenantDatabase(config);
             
-            // Ensure connection pool exists
-            if (!connectionManager.hasPool(tenantId)) {
-                connectionManager.createTenantPool(tenantId, config.getDatabaseConfig());
-            }
+            // Create tables
+            List<String> tableSchemas = loadTableSchemas();
+            provider.createTenantTables(tenantId, tableSchemas);
             
-            // Switch context
-            connectionManager.switchTenant(tenantId);
+            // Save tenant configuration
+            tenantConfigRepository.save(config);
             
-            // Verify connection
-            try (Connection conn = connectionManager.getConnection()) {
-                return conn.isValid(5); // 5 second timeout
-            }
+            // Initialize connection pool
+            connectionPoolManager.getDataSource(tenantId);
             
         } catch (Exception e) {
-            log.error("Failed to switch to tenant: " + tenantId, e);
-            return false;
+            throw new TenantCreationException("Failed to create tenant: " + tenantId, e);
         }
     }
     
     @Override
-    public void createDatabase(String databaseName) {
-        String tenantId = getCurrentTenantId();
-        TenantConfig config = tenantRegistry.getTenantConfig(tenantId);
+    public void executeSql(String sql, Object... params) {
+        String tenantId = TenantContext.getCurrentTenant();
+        DataSource dataSource = connectionPoolManager.getDataSource(tenantId);
         
-        DatabaseProvider provider = ProviderRegistry.getProvider(config.getDatabaseType());
-        SchemaManager schemaManager = provider.getSchemaManager();
-        
-        schemaManager.createDatabase(databaseName);
-        
-        // Update tenant configuration
-        config.addDatabase(databaseName);
-        tenantRegistry.updateTenantConfig(tenantId, config);
-    }
-}
-```
-
-**Interview Insight**: *Emphasize the importance of connection validation and proper error handling during tenant switching. Discuss how to handle scenarios where a tenant's database becomes unavailable.*
-
----
-
-## Schema Management & Migrations
-
-### Migration System Architecture
-
-```mermaid
-graph TB
-    subgraph "Migration Management"
-        A[Migration Files] --> B[Migration Parser]
-        B --> C[Version Tracker]
-        C --> D[Execution Engine]
-    end
-    
-    subgraph "Per-Tenant Execution"
-        D --> E[Tenant 1<br/>Migration]
-        D --> F[Tenant 2<br/>Migration]
-        D --> G[Tenant N<br/>Migration]
-    end
-    
-    subgraph "Database-Specific"
-        E --> H[MySQL Executor]
-        F --> I[PostgreSQL Executor]
-        G --> H
-    end
-```
-
-### Migration Implementation
-
-```java
-public class MigrationEngine {
-    
-    public void runMigrations(String tenantId, String migrationsPath) {
-        List<Migration> pendingMigrations = findPendingMigrations(tenantId, migrationsPath);
-        
-        for (Migration migration : pendingMigrations) {
-            try {
-                beginTransaction();
-                
-                // Execute migration for current provider
-                DatabaseProvider provider = getCurrentProvider();
-                MigrationExecutor executor = provider.getMigrationExecutor();
-                
-                executor.execute(migration);
-                
-                // Record migration completion
-                recordMigrationCompletion(tenantId, migration);
-                
-                commit();
-                
-            } catch (Exception e) {
-                rollback();
-                throw new MigrationException("Failed to execute migration: " + 
-                    migration.getVersion(), e);
-            }
-        }
-    }
-    
-    private List<Migration> findPendingMigrations(String tenantId, String path) {
-        Set<String> appliedVersions = getAppliedMigrations(tenantId);
-        
-        return loadMigrationsFromPath(path)
-            .stream()
-            .filter(m -> !appliedVersions.contains(m.getVersion()))
-            .sorted(Comparator.comparing(Migration::getVersion))
-            .collect(Collectors.toList());
-    }
-}
-
-// Database-specific migration example
-public class MySQLMigrationExecutor implements MigrationExecutor {
-    
-    @Override
-    public void execute(Migration migration) {
-        String sql = migration.getSql();
-        
-        // Handle MySQL-specific syntax transformations
-        sql = transformForMySQL(sql);
-        
-        try (Connection conn = getConnection();
-             Statement stmt = conn.createStatement()) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement stmt = connection.prepareStatement(sql)) {
             
-            // Execute migration SQL
-            stmt.execute(sql);
+            setParameters(stmt, params);
+            stmt.execute();
             
         } catch (SQLException e) {
-            throw new MigrationException("MySQL migration failed", e);
+            throw new DatabaseException("Failed to execute SQL for tenant: " + tenantId, e);
         }
     }
     
-    private String transformForMySQL(String sql) {
-        // Transform generic SQL to MySQL-specific syntax
-        return sql.replaceAll("SERIAL", "INT AUTO_INCREMENT")
-                 .replaceAll("BOOLEAN", "TINYINT(1)")
-                 .replaceAll("NOW\\(\\)", "CURRENT_TIMESTAMP");
-    }
-}
-```
-
-**Interview Insight**: *Discuss migration rollback strategies and how to handle schema changes that affect multiple tenants. Consider blue-green deployment scenarios.*
-
----
-
-## Performance Optimization
-
-### Query Optimization Strategies
-
-```java
-public class QueryOptimizer {
-    
-    private final QueryCache queryCache = new QueryCache();
-    private final StatementCache preparedStatements = new StatementCache();
-    
-    public <T> List<T> executeOptimizedQuery(String sql, Class<T> resultType, Object... params) {
-        // 1. Check query cache first
-        String cacheKey = generateCacheKey(sql, params);
-        List<T> cached = queryCache.get(cacheKey);
-        if (cached != null) {
-            return cached;
-        }
+    @Override
+    public <T> List<T> query(String sql, RowMapper<T> rowMapper, Object... params) {
+        String tenantId = TenantContext.getCurrentTenant();
+        DataSource dataSource = connectionPoolManager.getDataSource(tenantId);
         
-        // 2. Use prepared statement cache
-        PreparedStatement stmt = preparedStatements.get(sql);
-        if (stmt == null) {
-            stmt = getConnection().prepareStatement(sql);
-            preparedStatements.put(sql, stmt);
-        }
+        List<T> results = new ArrayList<>();
         
-        // 3. Execute with parameters
-        setParameters(stmt, params);
-        List<T> results = executeAndMap(stmt, resultType);
-        
-        // 4. Cache results if appropriate
-        if (isCacheable(sql)) {
-            queryCache.put(cacheKey, results, getCacheTTL(sql));
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement stmt = connection.prepareStatement(sql)) {
+            
+            setParameters(stmt, params);
+            
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    results.add(rowMapper.mapRow(rs));
+                }
+            }
+            
+        } catch (SQLException e) {
+            throw new DatabaseException("Failed to query for tenant: " + tenantId, e);
         }
         
         return results;
     }
+    
+    @Override
+    public void executeTransaction(TransactionCallback callback) {
+        String tenantId = TenantContext.getCurrentTenant();
+        DataSource dataSource = connectionPoolManager.getDataSource(tenantId);
+        
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            
+            try {
+                callback.doInTransaction(connection);
+                connection.commit();
+            } catch (Exception e) {
+                connection.rollback();
+                throw e;
+            }
+            
+        } catch (SQLException e) {
+            throw new DatabaseException("Transaction failed for tenant: " + tenantId, e);
+        }
+    }
+}
+```
+
+## Production Use Cases and Examples
+
+### Use Case 1: SaaS CRM System
+
+```java
+@RestController
+@RequestMapping("/api/customers")
+public class CustomerController {
+    
+    private final MultiTenantDatabaseSDK databaseSDK;
+    
+    @GetMapping
+    public List<Customer> getCustomers() {
+        return databaseSDK.query(
+            "SELECT * FROM customers WHERE active = ?",
+            (rs) -> new Customer(
+                rs.getLong("id"),
+                rs.getString("name"),
+                rs.getString("email")
+            ),
+            true
+        );
+    }
+    
+    @PostMapping
+    public void createCustomer(@RequestBody Customer customer) {
+        databaseSDK.executeSql(
+            "INSERT INTO customers (name, email, created_at) VALUES (?, ?, ?)",
+            customer.getName(),
+            customer.getEmail(),
+            Timestamp.from(Instant.now())
+        );
+    }
+}
+```
+
+### Use Case 2: Tenant Onboarding Process
+
+```java
+@Service
+public class TenantOnboardingService {
+    
+    private final MultiTenantDatabaseSDK databaseSDK;
+    
+    public void onboardNewTenant(TenantRegistration registration) {
+        TenantConfig config = TenantConfig.builder()
+            .tenantId(registration.getTenantId())
+            .databaseType("mysql")
+            .host("localhost")
+            .port(3306)
+            .databaseName("tenant_" + registration.getTenantId())
+            .username("tenant_user")
+            .password(generateSecurePassword())
+            .maxPoolSize(10)
+            .minIdle(2)
+            .build();
+        
+        try {
+            // Create tenant database and tables
+            databaseSDK.createTenant(registration.getTenantId(), config);
+            
+            // Insert initial data
+            insertInitialData(registration);
+            
+            // Send welcome email
+            sendWelcomeEmail(registration);
+            
+        } catch (Exception e) {
+            // Rollback tenant creation
+            databaseSDK.deleteTenant(registration.getTenantId());
+            throw new TenantOnboardingException("Failed to onboard tenant", e);
+        }
+    }
+}
+```
+
+### Use Case 3: Data Migration Between Tenants
+
+```java
+@Service
+public class TenantDataMigrationService {
+    
+    private final MultiTenantDatabaseSDK databaseSDK;
+    
+    public void migrateTenantData(String sourceTenantId, String targetTenantId) {
+        // Export data from source tenant
+        TenantContext.setTenant(sourceTenantId);
+        List<Customer> customers = databaseSDK.query(
+            "SELECT * FROM customers",
+            this::mapCustomer
+        );
+        
+        // Import data to target tenant
+        TenantContext.setTenant(targetTenantId);
+        databaseSDK.executeTransaction(connection -> {
+            for (Customer customer : customers) {
+                PreparedStatement stmt = connection.prepareStatement(
+                    "INSERT INTO customers (name, email, created_at) VALUES (?, ?, ?)"
+                );
+                stmt.setString(1, customer.getName());
+                stmt.setString(2, customer.getEmail());
+                stmt.setTimestamp(3, customer.getCreatedAt());
+                stmt.executeUpdate();
+            }
+        });
+    }
+}
+```
+
+## Runtime Datasource Switching
+
+### Dynamic DataSource Routing
+
+```java
+public class MultiTenantDataSource extends AbstractRoutingDataSource {
+    
+    @Override
+    protected Object determineCurrentLookupKey() {
+        return TenantContext.getCurrentTenant();
+    }
+    
+    @Override
+    protected DataSource determineTargetDataSource() {
+        String tenantId = TenantContext.getCurrentTenant();
+        if (tenantId == null) {
+            return getDefaultDataSource();
+        }
+        
+        return connectionPoolManager.getDataSource(tenantId);
+    }
+}
+```
+
+### Request Flow Diagram
+
+{% mermaid sequenceDiagram %}
+    participant Client
+    participant API Gateway
+    participant SaaS Service
+    participant SDK
+    participant Database
+    
+    Client->>API Gateway: Request with tenant info
+    API Gateway->>SaaS Service: Forward request
+    SaaS Service->>SDK: Set tenant context
+    SDK->>SDK: Store in ThreadLocal
+    SaaS Service->>SDK: Execute database operation
+    SDK->>SDK: Determine datasource
+    SDK->>Database: Execute query
+    Database->>SDK: Return results
+    SDK->>SaaS Service: Return results
+    SaaS Service->>Client: Return response
+{% endmermaid %}
+
+**Interview Insight**: *"How do you handle database connection switching at runtime?"*
+
+We use Spring's AbstractRoutingDataSource combined with ThreadLocal tenant context. The routing happens transparently - when a database operation is requested, the SDK determines the appropriate datasource based on the current tenant context stored in ThreadLocal.
+
+## Performance Optimization Strategies
+
+### Connection Pool Tuning
+
+```java
+@ConfigurationProperties(prefix = "multitenant.pool")
+public class ConnectionPoolConfig {
+    private int maxPoolSize = 10;
+    private int minIdle = 2;
+    private long connectionTimeout = 30000;
+    private long idleTimeout = 600000;
+    private long maxLifetime = 1800000;
+    private int leakDetectionThreshold = 60000;
+    
+    // Getters and setters
 }
 ```
 
@@ -572,141 +627,284 @@ public class QueryOptimizer {
 
 ```java
 @Component
-public class PoolMonitor {
+public class ConnectionPoolMonitor {
     
-    @Scheduled(fixedRate = 30000) // Every 30 seconds
-    public void monitorPools() {
-        tenantPools.forEach((tenantId, pool) -> {
-            HikariPoolMXBean mxBean = pool.getHikariPoolMXBean();
+    private final MeterRegistry meterRegistry;
+    private final ConnectionPoolManager poolManager;
+    
+    @Scheduled(fixedRate = 30000)
+    public void monitorConnectionPools() {
+        poolManager.getAllDataSources().forEach((tenantId, dataSource) -> {
+            HikariPoolMXBean poolMXBean = dataSource.getHikariPoolMXBean();
             
-            PoolMetrics metrics = PoolMetrics.builder()
-                .tenantId(tenantId)
-                .activeConnections(mxBean.getActiveConnections())
-                .idleConnections(mxBean.getIdleConnections())
-                .totalConnections(mxBean.getTotalConnections())
-                .threadsAwaitingConnection(mxBean.getThreadsAwaitingConnection())
-                .build();
-            
-            // Check for potential issues
-            if (metrics.getThreadsAwaitingConnection() > 0) {
-                alertingService.sendAlert(
-                    "Connection pool exhaustion detected for tenant: " + tenantId);
-            }
-            
-            if (metrics.getActiveConnections() > (metrics.getTotalConnections() * 0.8)) {
-                log.warn("High connection usage for tenant {}: {}%", 
-                    tenantId, (metrics.getActiveConnections() * 100 / metrics.getTotalConnections()));
-            }
-            
-            metricsCollector.record(metrics);
+            Gauge.builder("connection.pool.active")
+                .tag("tenant", tenantId)
+                .register(meterRegistry, poolMXBean, HikariPoolMXBean::getActiveConnections);
+                
+            Gauge.builder("connection.pool.idle")
+                .tag("tenant", tenantId)
+                .register(meterRegistry, poolMXBean, HikariPoolMXBean::getIdleConnections);
         });
     }
 }
 ```
 
-**Interview Insight**: *Discuss how to balance between connection pool efficiency and memory usage. Explain the trade-offs between having many small pools vs. fewer large pools.*
-
----
-
-## Security & Isolation
-
-### Tenant Isolation Strategies
-
-{% mermaid graph TB %}
-    subgraph "Isolation Levels"
-        A[Database Level<br/>Separate DB per tenant]
-        B[Schema Level<br/>Separate schema per tenant]
-        C[Row Level<br/>Tenant ID in each row]
-    end
-    
-    subgraph "Security Measures"
-        D[Connection Encryption]
-        E[Access Control Lists]
-        F[Query Validation]
-        G[Audit Logging]
-    end
-    
-    A --> D
-    B --> E
-    C --> F
-    A --> G
-    B --> G
-    C --> G
-{% endmermaid %}
-
-### Security Implementation
+### Caching Strategy
 
 ```java
-public class SecurityManager {
+@Service
+public class TenantConfigCacheService {
     
-    public void validateTenantAccess(String tenantId, String userId) {
-        TenantAccessControl acl = getTenantACL(tenantId);
-        
-        if (!acl.hasAccess(userId)) {
-            auditLogger.logUnauthorizedAccess(tenantId, userId);
-            throw new UnauthorizedAccessException("User " + userId + 
-                " does not have access to tenant " + tenantId);
-        }
+    private final LoadingCache<String, TenantConfig> configCache;
+    
+    public TenantConfigCacheService() {
+        this.configCache = Caffeine.newBuilder()
+            .maximumSize(1000)
+            .expireAfterWrite(30, TimeUnit.MINUTES)
+            .build(this::loadTenantConfig);
     }
     
-    public String sanitizeQuery(String sql) {
-        // Prevent SQL injection
-        if (containsDangerousPatterns(sql)) {
-            throw new SecurityException("Potentially dangerous SQL detected");
-        }
-        
-        // Ensure tenant context is properly applied
-        if (!containsTenantFilter(sql)) {
-            sql = addTenantFilter(sql);
-        }
-        
-        return sql;
+    public TenantConfig getTenantConfig(String tenantId) {
+        return configCache.get(tenantId);
     }
     
-    private boolean containsDangerousPatterns(String sql) {
-        String[] dangerousPatterns = {
-            "DROP\\s+TABLE", "DELETE\\s+FROM.*WHERE\\s+1=1", 
-            "UNION\\s+SELECT", "INTO\\s+OUTFILE"
-        };
-        
-        return Arrays.stream(dangerousPatterns)
-            .anyMatch(pattern -> sql.toUpperCase().matches(".*" + pattern + ".*"));
+    private TenantConfig loadTenantConfig(String tenantId) {
+        return tenantConfigRepository.findByTenantId(tenantId)
+            .orElseThrow(() -> new TenantNotFoundException("Tenant not found: " + tenantId));
     }
 }
 ```
 
-**Interview Insight**: *Discuss the CAP theorem implications for multi-tenant databases and how to choose between consistency, availability, and partition tolerance based on business requirements.*
+## Security and Compliance
 
----
+### Tenant Isolation Security
 
-## Monitoring & Observability
+```java
+@Component
+public class TenantSecurityValidator {
+    
+    public void validateTenantAccess(String requestedTenantId, String authenticatedTenantId) {
+        if (!requestedTenantId.equals(authenticatedTenantId)) {
+            throw new TenantAccessDeniedException("Cross-tenant access denied");
+        }
+    }
+    
+    public void validateSqlInjection(String sql) {
+        if (containsSqlInjectionPatterns(sql)) {
+            throw new SecurityException("Potential SQL injection detected");
+        }
+    }
+    
+    private boolean containsSqlInjectionPatterns(String sql) {
+        String[] patterns = {"';", "DROP", "DELETE", "UPDATE", "INSERT", "UNION"};
+        String upperSql = sql.toUpperCase();
+        
+        return Arrays.stream(patterns)
+            .anyMatch(upperSql::contains);
+    }
+}
+```
+
+### Encryption and Data Protection
+
+```java
+@Component
+public class DataEncryptionService {
+    
+    private final AESUtil aesUtil;
+    
+    public String encryptSensitiveData(String data, String tenantId) {
+        String tenantKey = generateTenantSpecificKey(tenantId);
+        return aesUtil.encrypt(data, tenantKey);
+    }
+    
+    public String decryptSensitiveData(String encryptedData, String tenantId) {
+        String tenantKey = generateTenantSpecificKey(tenantId);
+        return aesUtil.decrypt(encryptedData, tenantKey);
+    }
+    
+    private String generateTenantSpecificKey(String tenantId) {
+        // Generate tenant-specific encryption key
+        return keyDerivationService.deriveKey(tenantId);
+    }
+}
+```
+
+## Error Handling and Resilience
+
+### Exception Hierarchy
+
+```java
+public class DatabaseException extends RuntimeException {
+    public DatabaseException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+
+public class TenantNotFoundException extends DatabaseException {
+    public TenantNotFoundException(String message) {
+        super(message, null);
+    }
+}
+
+public class TenantCreationException extends DatabaseException {
+    public TenantCreationException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+```
+
+### Retry Mechanism
+
+```java
+@Component
+public class DatabaseRetryService {
+    
+    private final RetryTemplate retryTemplate;
+    
+    public DatabaseRetryService() {
+        this.retryTemplate = RetryTemplate.builder()
+            .maxAttempts(3)
+            .exponentialBackoff(1000, 2, 10000)
+            .retryOn(SQLException.class, DataAccessException.class)
+            .build();
+    }
+    
+    public <T> T executeWithRetry(Supplier<T> operation) {
+        return retryTemplate.execute(context -> operation.get());
+    }
+}
+```
+
+### Circuit Breaker Implementation
+
+```java
+@Component
+public class DatabaseCircuitBreaker {
+    
+    private final CircuitBreaker circuitBreaker;
+    
+    public DatabaseCircuitBreaker() {
+        this.circuitBreaker = CircuitBreaker.ofDefaults("database");
+        circuitBreaker.getEventPublisher()
+            .onStateTransition(event -> 
+                log.info("Circuit breaker state transition: {}", event));
+    }
+    
+    public <T> T executeWithCircuitBreaker(Supplier<T> operation) {
+        return circuitBreaker.executeSupplier(operation);
+    }
+}
+```
+
+## Testing Strategies
+
+### Unit Testing
+
+```java
+@ExtendWith(MockitoExtension.class)
+class MultiTenantDatabaseSDKTest {
+    
+    @Mock
+    private ConnectionPoolManager connectionPoolManager;
+    
+    @Mock
+    private DatabaseProviderFactory providerFactory;
+    
+    @InjectMocks
+    private MultiTenantDatabaseSDKImpl sdk;
+    
+    @Test
+    void shouldExecuteSqlForCurrentTenant() {
+        // Given
+        String tenantId = "tenant-123";
+        TenantContext.setTenant(tenantId);
+        
+        DataSource mockDataSource = mock(DataSource.class);
+        Connection mockConnection = mock(Connection.class);
+        PreparedStatement mockStatement = mock(PreparedStatement.class);
+        
+        when(connectionPoolManager.getDataSource(tenantId)).thenReturn(mockDataSource);
+        when(mockDataSource.getConnection()).thenReturn(mockConnection);
+        when(mockConnection.prepareStatement(anyString())).thenReturn(mockStatement);
+        
+        // When
+        sdk.executeSql("INSERT INTO users (name) VALUES (?)", "John");
+        
+        // Then
+        verify(mockStatement).setString(1, "John");
+        verify(mockStatement).execute();
+    }
+}
+```
+
+### Integration Testing
+
+```java
+@SpringBootTest
+@TestPropertySource(properties = {
+    "spring.datasource.url=jdbc:h2:mem:testdb",
+    "spring.jpa.hibernate.ddl-auto=create-drop"
+})
+class MultiTenantIntegrationTest {
+    
+    @Autowired
+    private MultiTenantDatabaseSDK sdk;
+    
+    @Test
+    void shouldCreateTenantAndExecuteOperations() {
+        // Given
+        String tenantId = "test-tenant";
+        TenantConfig config = createTestTenantConfig(tenantId);
+        
+        // When
+        sdk.createTenant(tenantId, config);
+        
+        TenantContext.setTenant(tenantId);
+        sdk.executeSql("INSERT INTO users (name, email) VALUES (?, ?)", "John", "john@example.com");
+        
+        List<User> users = sdk.query("SELECT * FROM users", this::mapUser);
+        
+        // Then
+        assertThat(users).hasSize(1);
+        assertThat(users.get(0).getName()).isEqualTo("John");
+    }
+}
+```
+
+## Monitoring and Observability
 
 ### Metrics Collection
 
 ```java
 @Component
-public class DatabaseMetricsCollector {
+public class MultiTenantMetrics {
     
-    private final MeterRegistry meterRegistry;
-    private final Map<String, Timer> queryTimers = new ConcurrentHashMap<>();
+    private final Counter tenantCreationCounter;
+    private final Timer databaseOperationTimer;
+    private final Gauge activeTenantGauge;
     
-    public void recordQueryExecution(String tenantId, String queryType, Duration duration) {
-        Timer timer = Timer.builder("database.query.duration")
-            .tag("tenant", tenantId)
-            .tag("query_type", queryType)
+    public MultiTenantMetrics(MeterRegistry meterRegistry) {
+        this.tenantCreationCounter = Counter.builder("tenant.creation.count")
             .register(meterRegistry);
-        
-        timer.record(duration);
+            
+        this.databaseOperationTimer = Timer.builder("database.operation.time")
+            .register(meterRegistry);
+            
+        this.activeTenantGauge = Gauge.builder("tenant.active.count")
+            .register(meterRegistry, this, MultiTenantMetrics::getActiveTenantCount);
     }
     
-    public void recordConnectionPoolMetrics(String tenantId, PoolMetrics metrics) {
-        Gauge.builder("database.pool.active_connections")
-            .tag("tenant", tenantId)
-            .register(meterRegistry, metrics, PoolMetrics::getActiveConnections);
-            
-        Gauge.builder("database.pool.idle_connections")
-            .tag("tenant", tenantId)
-            .register(meterRegistry, metrics, PoolMetrics::getIdleConnections);
+    public void recordTenantCreation() {
+        tenantCreationCounter.increment();
+    }
+    
+    public void recordDatabaseOperation(Duration duration) {
+        databaseOperationTimer.record(duration);
+    }
+    
+    private double getActiveTenantCount() {
+        return connectionPoolManager.getActiveTenantCount();
     }
 }
 ```
@@ -715,875 +913,98 @@ public class DatabaseMetricsCollector {
 
 ```java
 @Component
-public class DatabaseHealthIndicator implements HealthIndicator {
+public class MultiTenantHealthIndicator implements HealthIndicator {
+    
+    private final ConnectionPoolManager connectionPoolManager;
     
     @Override
     public Health health() {
-        Health.Builder builder = new Health.Builder();
-        
-        Map<String, Object> details = new HashMap<>();
-        boolean allHealthy = true;
-        
-        for (String tenantId : tenantRegistry.getAllTenantIds()) {
-            try {
-                boolean healthy = checkTenantHealth(tenantId);
-                details.put("tenant_" + tenantId, healthy ? "UP" : "DOWN");
-                allHealthy = allHealthy && healthy;
-            } catch (Exception e) {
-                details.put("tenant_" + tenantId, "ERROR: " + e.getMessage());
-                allHealthy = false;
-            }
-        }
-        
-        details.put("total_tenants", tenantRegistry.getTenantCount());
-        details.put("healthy_tenants", details.values().stream()
-            .mapToInt(v -> "UP".equals(v) ? 1 : 0).sum());
-        
-        return allHealthy ? builder.up().withDetails(details).build() 
-                         : builder.down().withDetails(details).build();
-    }
-    
-    private boolean checkTenantHealth(String tenantId) {
-        try (Connection conn = connectionManager.getConnection(tenantId)) {
-            return conn.isValid(5);
+        try {
+            int activeTenants = connectionPoolManager.getActiveTenantCount();
+            int totalConnections = connectionPoolManager.getTotalActiveConnections();
+            
+            return Health.up()
+                .withDetail("activeTenants", activeTenants)
+                .withDetail("totalConnections", totalConnections)
+                .build();
+                
         } catch (Exception e) {
-            return false;
+            return Health.down()
+                .withException(e)
+                .build();
         }
     }
 }
 ```
 
-**Interview Insight**: *Explain how to implement circuit breakers for database connections and discuss strategies for graceful degradation when database issues occur.*
+## Deployment and Configuration
 
----
+### Docker Configuration
 
-## Best Practices & Patterns
+```dockerfile
+FROM openjdk:11-jre-slim
 
-### Configuration Management
+COPY target/multi-tenant-sdk.jar app.jar
+
+ENV JAVA_OPTS="-Xmx2g -Xms1g"
+ENV HIKARI_MAX_POOL_SIZE=20
+ENV HIKARI_MIN_IDLE=5
+
+EXPOSE 8080
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app.jar"]
+```
+
+### Kubernetes Deployment
 
 ```yaml
-# application.yml
-database-sdk:
-  default-provider: mysql
-  connection-pools:
-    default:
-      maximum-pool-size: 10
-      minimum-idle: 2
-      connection-timeout: 30000
-      idle-timeout: 600000
-      max-lifetime: 1800000
-    
-  tenant-tiers:
-    basic:
-      max-connections: 5
-      connection-timeout: 10000
-    premium:
-      max-connections: 20
-      connection-timeout: 30000
-    enterprise:
-      max-connections: 50
-      connection-timeout: 60000
-  
-  providers:
-    mysql:
-      driver-class: com.mysql.cj.jdbc.Driver
-      validation-query: "SELECT 1"
-      properties:
-        cachePrepStmts: true
-        prepStmtCacheSize: 250
-    
-    postgresql:
-      driver-class: org.postgresql.Driver
-      validation-query: "SELECT 1"
-      properties:
-        prepareThreshold: 1
-        preparedStatementCacheQueries: 256
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi-tenant-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: multi-tenant-app
+  template:
+    metadata:
+      labels:
+        app: multi-tenant-app
+    spec:
+      containers:
+      - name: app
+        image: multi-tenant-sdk:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "production"
+        - name: DATABASE_MAX_POOL_SIZE
+          value: "20"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
 ```
 
-### Error Handling Strategy
+## Common Interview Questions and Answers
 
-```java
-public class DatabaseExceptionHandler {
-    
-    public void handleException(Exception e, String operation, String tenantId) {
-        if (e instanceof SQLException) {
-            SQLException sqlEx = (SQLException) e;
-            
-            switch (sqlEx.getErrorCode()) {
-                case 1062: // MySQL duplicate key
-                case 23505: // PostgreSQL unique violation
-                    throw new DuplicateKeyException("Duplicate key violation", sqlEx);
-                    
-                case 1205: // MySQL lock timeout
-                case 55P03: // PostgreSQL lock timeout  
-                    throw new LockTimeoutException("Database lock timeout", sqlEx);
-                    
-                case 2006: // MySQL server gone away
-                case 57P01: // PostgreSQL connection failure
-                    handleConnectionFailure(tenantId, sqlEx);
-                    break;
-                    
-                default:
-                    log.error("Unhandled SQL exception for tenant {}: {}", 
-                        tenantId, sqlEx.getMessage(), sqlEx);
-                    throw new DatabaseException("Database operation failed", sqlEx);
-            }
-        }
-        
-        // Handle other exception types
-        if (e instanceof ConnectionPoolException) {
-            handlePoolExhaustion(tenantId, e);
-        }
-    }
-    
-    private void handleConnectionFailure(String tenantId, SQLException e) {
-        // Mark connection pool as unhealthy
-        connectionManager.markPoolUnhealthy(tenantId);
-        
-        // Trigger reconnection attempt
-        scheduledExecutor.schedule(() -> {
-            try {
-                connectionManager.validateAndRepairPool(tenantId);
-            } catch (Exception ex) {
-                log.error("Failed to repair connection pool for tenant: " + tenantId, ex);
-            }
-        }, 30, TimeUnit.SECONDS);
-        
-        throw new DatabaseConnectionException("Database connection failed", e);
-    }
-}
-```
+**Q: "How do you handle tenant data isolation?"**
 
-**Interview Insight**: *Discuss the importance of proper exception handling in database layers and how it affects the overall system reliability. Mention strategies for handling transient vs. permanent failures.*
+A: We implement database-per-tenant isolation using dynamic datasource routing. Each tenant has its own database and connection pool, ensuring complete data isolation. The SDK uses ThreadLocal to maintain tenant context throughout the request lifecycle.
 
----
+**Q: "What happens if a tenant's database becomes unavailable?"**
 
-## Testing Strategy
+A: We implement circuit breaker pattern and retry mechanisms. If a tenant's database is unavailable, the circuit breaker opens, preventing cascading failures. We also have health checks that monitor each tenant's database connectivity.
 
-### Unit Testing
+**Q: "How do you handle database migrations across multiple tenants?"**
 
-```java
-@ExtendWith(MockitoExtension.class)
-class DatabaseSDKTest {
-    
-    @Mock
-    private TenantConnectionManager connectionManager;
-    
-    @Mock
-    private TenantRegistry tenantRegistry;
-    
-    @InjectMocks
-    private DatabaseSDKImpl databaseSDK;
-    
-    @Test
-    void shouldCreateTenantSuccessfully() {
-        // Given
-        String tenantId = "test-tenant";
-        DatabaseConfig config = DatabaseConfig.builder()
-            .provider("mysql")
-            .host("localhost")
-            .port(3306)
-            .build();
-        
-        when(tenantRegistry.getTenantConfig(tenantId)).thenReturn(null);
-        
-        // When
-        TenantContext context = databaseSDK.createTenant(tenantId, config);
-        
-        // Then
-        assertThat(context.getTenantId()).isEqualTo(tenantId);
-        verify(connectionManager).createTenantPool(eq(tenantId), any(DatabaseConfig.class));
-        verify(tenantRegistry).registerTenant(eq(tenantId), any(TenantConfig.class));
-    }
-    
-    @Test
-    void shouldSwitchTenantSuccessfully() {
-        // Given
-        String tenantId = "existing-tenant";
-        TenantConfig config = new TenantConfig(tenantId, mock(DatabaseConfig.class));
-        
-        when(tenantRegistry.getTenantConfig(tenantId)).thenReturn(config);
-        when(connectionManager.hasPool(tenantId)).thenReturn(true);
-        when(connectionManager.getConnection()).thenReturn(mock(Connection.class));
-        
-        // When
-        boolean result = databaseSDK.switchToTenant(tenantId);
-        
-        // Then
-        assertThat(result).isTrue();
-        verify(connectionManager).switchTenant(tenantId);
-    }
-}
-```
+A: We use a versioned migration system where each tenant's database schema version is tracked. Migrations are applied tenant by tenant, with rollback capabilities. Critical migrations are tested in staging environments first.
 
-### Integration Testing
+**Q: "How do you optimize connection pool usage?"**
 
-```java
-@TestContainers
-@SpringBootTest
-class DatabaseSDKIntegrationTest {
-    
-    @Container
-    static MySQLContainer<?> mysql = new MySQLContainer<>("mysql:8.0")
-            .withDatabaseName("test_db")
-            .withUsername("test")
-            .withPassword("test");
-    
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:13")
-            .withDatabaseName("test_db")
-            .withUsername("test")
-            .withPassword("test");
-    
-    @Autowired
-    private DatabaseSDK databaseSDK;
-    
-    @Test
-    void shouldWorkWithMySQLProvider() {
-        // Given
-        DatabaseConfig config = DatabaseConfig.builder()
-            .provider("mysql")
-            .jdbcUrl(mysql.getJdbcUrl())
-            .username(mysql.getUsername())
-            .password(mysql.getPassword())
-            .build();
-        
-        // When
-        TenantContext context = databaseSDK.createTenant("mysql-tenant", config);
-        databaseSDK.switchToTenant("mysql-tenant");
-        
-        // Then
-        databaseSDK.createTable("users", UserTableSchema.create());
-        
-        List<String> tables = databaseSDK.query()
-            .select("table_name")
-            .from("information_schema.tables")
-            .where("table_schema = ?", "test_db")
-            .executeList(String.class);
-        
-        assertThat(tables).contains("users");
-    }
-}
-```
-
-**Interview Insight**: *Emphasize the importance of testing with real databases using testcontainers. Discuss how to create comprehensive test suites that cover both happy path and failure scenarios, including network partitions and database failovers.*
-
----
-
-## Deployment & Operations
-
-### Deployment Architecture
-
-{% mermaid graph TB %}
-    subgraph "Load Balancer"
-        LB[Application Load Balancer]
-    end
-    
-    subgraph "Application Tier"
-        A1[App Instance 1<br/>Database SDK]
-        A2[App Instance 2<br/>Database SDK]
-        A3[App Instance N<br/>Database SDK]
-    end
-    
-    subgraph "Database Tier"
-        subgraph "MySQL Cluster"
-            M1[(MySQL Master)]
-            M2[(MySQL Replica 1)]
-            M3[(MySQL Replica 2)]
-        end
-        
-        subgraph "PostgreSQL Cluster"
-            P1[(PostgreSQL Master)]
-            P2[(PostgreSQL Replica 1)]
-            P3[(PostgreSQL Replica 2)]
-        end
-    end
-    
-    subgraph "Configuration"
-        C1[Config Server]
-        C2[Service Discovery]
-        C3[Tenant Registry]
-    end
-    
-    LB --> A1
-    LB --> A2
-    LB --> A3
-    
-    A1 --> M1
-    A1 --> P1
-    A2 --> M1
-    A2 --> P1
-    A3 --> M1
-    A3 --> P1
-    
-    M1 --> M2
-    M1 --> M3
-    P1 --> P2
-    P1 --> P3
-    
-    A1 --> C1
-    A2 --> C2
-    A3 --> C3
-{% endmermaid %}
-
-### Configuration Management
-
-```java
-@Configuration
-@EnableConfigurationProperties(DatabaseSDKProperties.class)
-public class DatabaseSDKAutoConfiguration {
-    
-    @Bean
-    @ConditionalOnMissingBean
-    public DatabaseSDK databaseSDK(DatabaseSDKProperties properties) {
-        return DatabaseSDKBuilder.builder()
-            .withProperties(properties)
-            .withProviders(discoverProviders())
-            .withMetrics(meterRegistry())
-            .build();
-    }
-    
-    @Bean
-    public TenantConnectionManager tenantConnectionManager(
-            DatabaseSDKProperties properties) {
-        return new TenantConnectionManager(properties.getConnectionPools());
-    }
-    
-    @Bean
-    public DatabaseHealthIndicator databaseHealthIndicator(
-            DatabaseSDK databaseSDK) {
-        return new DatabaseHealthIndicator(databaseSDK);
-    }
-    
-    private List<DatabaseProvider> discoverProviders() {
-        return ServiceLoader.load(DatabaseProvider.class)
-            .stream()
-            .map(ServiceLoader.Provider::get)
-            .collect(Collectors.toList());
-    }
-}
-```
-
-### Graceful Shutdown
-
-```java
-@Component
-public class DatabaseSDKShutdownHandler {
-    
-    @Autowired
-    private TenantConnectionManager connectionManager;
-    
-    @PreDestroy
-    public void shutdown() {
-        log.info("Initiating graceful database SDK shutdown...");
-        
-        try {
-            // 1. Stop accepting new connections
-            connectionManager.stopAcceptingNewConnections();
-            
-            // 2. Wait for active transactions to complete
-            waitForActiveTransactions(Duration.ofSeconds(30));
-            
-            // 3. Close all connection pools
-            connectionManager.closeAllPools();
-            
-            log.info("Database SDK shutdown completed successfully");
-            
-        } catch (Exception e) {
-            log.error("Error during database SDK shutdown", e);
-        }
-    }
-    
-    private void waitForActiveTransactions(Duration timeout) {
-        long endTime = System.currentTimeMillis() + timeout.toMillis();
-        
-        while (System.currentTimeMillis() < endTime) {
-            if (connectionManager.getActiveTransactionCount() == 0) {
-                break;
-            }
-            
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-    }
-}
-```
-
-**Interview Insight**: *Discuss the importance of graceful shutdown in distributed systems. Explain how improper shutdown can lead to data corruption or transaction rollbacks.*
-
----
-
-## Scalability Considerations
-
-### Horizontal Scaling Strategy
-
-{% mermaid flowchart TD %}
-    A[Incoming Request] --> B{Load Balancer}
-    B --> C[App Instance 1]
-    B --> D[App Instance 2]
-    B --> E[App Instance N]
-    
-    C --> F{Tenant Router}
-    D --> F
-    E --> F
-    
-    F --> G[Tenant Shard 1<br/>MySQL]
-    F --> H[Tenant Shard 2<br/>PostgreSQL]
-    F --> I[Tenant Shard N<br/>Mixed]
-    
-    J[Tenant Registry] --> F
-    K[Shard Manager] --> F
-{% endmermaid %}
-
-### Sharding Implementation
-
-```java
-public class TenantShardManager {
-    
-    private final Map<String, ShardConfiguration> shardConfigurations;
-    private final ConsistentHashRing<String> hashRing;
-    
-    public TenantShardManager(List<ShardConfiguration> shards) {
-        this.shardConfigurations = shards.stream()
-            .collect(Collectors.toMap(ShardConfiguration::getShardId, Function.identity()));
-        
-        this.hashRing = new ConsistentHashRing<>(
-            shards.stream().map(ShardConfiguration::getShardId).collect(Collectors.toList()),
-            160 // virtual nodes per shard
-        );
-    }
-    
-    public String getShardForTenant(String tenantId) {
-        return hashRing.get(tenantId);
-    }
-    
-    public void addShard(ShardConfiguration shard) {
-        shardConfigurations.put(shard.getShardId(), shard);
-        hashRing.add(shard.getShardId());
-        
-        // Trigger rebalancing if needed
-        scheduleRebalancing();
-    }
-    
-    public void removeShard(String shardId) {
-        ShardConfiguration shard = shardConfigurations.remove(shardId);
-        if (shard != null) {
-            hashRing.remove(shardId);
-            
-            // Migrate tenants to other shards
-            migrateTenants(shardId);
-        }
-    }
-    
-    private void migrateTenants(String fromShard) {
-        List<String> tenantsToMigrate = getTenantsByShardId(fromShard);
-        
-        for (String tenantId : tenantsToMigrate) {
-            String newShard = getShardForTenant(tenantId);
-            migrateTenant(tenantId, fromShard, newShard);
-        }
-    }
-}
-```
-
-### Read Replica Support
-
-```java
-public class ReadWriteSplitConnectionManager extends TenantConnectionManager {
-    
-    private final Map<String, List<HikariDataSource>> readReplicas = new ConcurrentHashMap<>();
-    private final LoadBalancer<HikariDataSource> replicaLoadBalancer;
-    
-    @Override
-    public Connection getConnection(AccessType accessType) {
-        String tenantId = getCurrentTenantId();
-        
-        if (accessType == AccessType.READ_ONLY) {
-            return getReadOnlyConnection(tenantId);
-        } else {
-            return getWriteConnection(tenantId);
-        }
-    }
-    
-    private Connection getReadOnlyConnection(String tenantId) {
-        List<HikariDataSource> replicas = readReplicas.get(tenantId);
-        
-        if (replicas == null || replicas.isEmpty()) {
-            // Fallback to master if no replicas available
-            return getWriteConnection(tenantId);
-        }
-        
-        HikariDataSource selectedReplica = replicaLoadBalancer.select(replicas);
-        
-        try {
-            Connection conn = selectedReplica.getConnection();
-            conn.setReadOnly(true);
-            return conn;
-        } catch (SQLException e) {
-            // If replica fails, fallback to master
-            log.warn("Failed to get read replica connection for tenant: " + tenantId, e);
-            return getWriteConnection(tenantId);
-        }
-    }
-    
-    public void addReadReplica(String tenantId, DatabaseConfig replicaConfig) {
-        HikariDataSource replicaPool = createDataSource(replicaConfig);
-        
-        readReplicas.computeIfAbsent(tenantId, k -> new ArrayList<>()).add(replicaPool);
-        
-        // Health check for the new replica
-        scheduleHealthCheck(tenantId, replicaPool);
-    }
-}
-```
-
-**Interview Insight**: *Explain the CAP theorem implications when designing read replicas. Discuss eventual consistency vs. strong consistency trade-offs and when to use each approach.*
-
----
-
-## Advanced Features
-
-### Query Result Caching
-
-```java
-public class QueryCacheManager {
-    
-    private final Cache<String, CachedResult> cache;
-    private final QueryAnalyzer queryAnalyzer;
-    
-    public QueryCacheManager(CacheConfiguration config) {
-        this.cache = Caffeine.newBuilder()
-            .maximumSize(config.getMaxSize())
-            .expireAfterWrite(config.getTtl())
-            .recordStats()
-            .build();
-        
-        this.queryAnalyzer = new QueryAnalyzer();
-    }
-    
-    public <T> List<T> executeWithCache(String sql, Class<T> resultType, Object... params) {
-        if (!queryAnalyzer.isCacheable(sql)) {
-            return executeDirectly(sql, resultType, params);
-        }
-        
-        String cacheKey = generateCacheKey(sql, params);
-        CachedResult cached = cache.getIfPresent(cacheKey);
-        
-        if (cached != null && !cached.isExpired()) {
-            cacheHitCounter.increment();
-            return (List<T>) cached.getResults();
-        }
-        
-        List<T> results = executeDirectly(sql, resultType, params);
-        
-        // Cache the results
-        cache.put(cacheKey, new CachedResult(results, System.currentTimeMillis()));
-        cacheMissCounter.increment();
-        
-        return results;
-    }
-    
-    public void invalidateCache(String pattern) {
-        // Invalidate cache entries matching the pattern
-        cache.asMap().keySet().stream()
-            .filter(key -> key.matches(pattern))
-            .forEach(cache::invalidate);
-    }
-    
-    // Smart cache invalidation based on table changes
-    @EventListener
-    public void handleTableModification(TableModificationEvent event) {
-        String tableName = event.getTableName();
-        String tenantId = event.getTenantId();
-        
-        // Invalidate all cache entries for this table and tenant
-        String pattern = String.format(".*%s.*%s.*", tenantId, tableName);
-        invalidateCache(pattern);
-    }
-}
-```
-
-### Database Connection Failover
-
-```java
-public class FailoverConnectionManager {
-    
-    private final Map<String, DatabaseCluster> clusters = new ConcurrentHashMap<>();
-    private final CircuitBreakerRegistry circuitBreakerRegistry;
-    
-    public Connection getConnection(String tenantId) {
-        DatabaseCluster cluster = clusters.get(tenantId);
-        if (cluster == null) {
-            throw new IllegalStateException("No cluster found for tenant: " + tenantId);
-        }
-        
-        // Try primary first
-        CircuitBreaker primaryCircuitBreaker = circuitBreakerRegistry
-            .circuitBreaker("primary-" + tenantId);
-        
-        return primaryCircuitBreaker.executeSupplier(() -> {
-            try {
-                return cluster.getPrimaryDataSource().getConnection();
-            } catch (SQLException e) {
-                throw new DatabaseConnectionException("Primary connection failed", e);
-            }
-        }).recover(throwable -> {
-            // Failover to secondary
-            log.warn("Primary database failed for tenant {}, failing over to secondary", 
-                tenantId, throwable);
-            
-            return getSecondaryConnection(cluster);
-        });
-    }
-    
-    private Connection getSecondaryConnection(DatabaseCluster cluster) {
-        List<HikariDataSource> secondaries = cluster.getSecondaryDataSources();
-        
-        for (HikariDataSource secondary : secondaries) {
-            try {
-                Connection conn = secondary.getConnection();
-                if (conn.isValid(5)) {
-                    return conn;
-                }
-            } catch (SQLException e) {
-                log.warn("Secondary database connection failed", e);
-            }
-        }
-        
-        throw new DatabaseConnectionException("All database connections failed");
-    }
-    
-    @Scheduled(fixedRate = 30000)
-    public void healthCheck() {
-        clusters.forEach((tenantId, cluster) -> {
-            checkClusterHealth(tenantId, cluster);
-        });
-    }
-    
-    private void checkClusterHealth(String tenantId, DatabaseCluster cluster) {
-        // Check primary health
-        boolean primaryHealthy = checkDataSourceHealth(cluster.getPrimaryDataSource());
-        
-        if (!primaryHealthy) {
-            // Try to recover primary
-            tryRecoverPrimary(tenantId, cluster);
-        }
-        
-        // Check secondary health
-        cluster.getSecondaryDataSources().forEach(secondary -> {
-            if (!checkDataSourceHealth(secondary)) {
-                log.warn("Secondary database unhealthy for tenant: {}", tenantId);
-            }
-        });
-    }
-}
-```
-
-### Multi-Region Support
-
-```java
-public class MultiRegionDatabaseManager {
-    
-    private final Map<String, RegionConfig> regions;
-    private final TenantRegionMapper tenantRegionMapper;
-    
-    public void createTenantInRegion(String tenantId, String regionId, DatabaseConfig config) {
-        RegionConfig region = regions.get(regionId);
-        if (region == null) {
-            throw new IllegalArgumentException("Unknown region: " + regionId);
-        }
-        
-        // Create database in the specified region
-        DatabaseProvider provider = getProviderForRegion(regionId, config.getProvider());
-        
-        // Adjust config for region-specific settings
-        DatabaseConfig regionConfig = config.toBuilder()
-            .host(region.getDatabaseHost())
-            .port(region.getDatabasePort())
-            .additionalProperties(region.getProviderProperties())
-            .build();
-        
-        // Create tenant database
-        createTenantDatabase(tenantId, regionConfig, provider);
-        
-        // Register tenant-region mapping
-        tenantRegionMapper.mapTenantToRegion(tenantId, regionId);
-        
-        // Setup cross-region replication if required
-        if (config.isReplicationEnabled()) {
-            setupCrossRegionReplication(tenantId, regionId, config);
-        }
-    }
-    
-    public Connection getConnection(String tenantId) {
-        String regionId = tenantRegionMapper.getRegionForTenant(tenantId);
-        if (regionId == null) {
-            throw new IllegalStateException("No region mapping found for tenant: " + tenantId);
-        }
-        
-        return getConnectionForRegion(tenantId, regionId);
-    }
-    
-    private void setupCrossRegionReplication(String tenantId, String primaryRegion, 
-                                           DatabaseConfig config) {
-        List<String> replicaRegions = config.getReplicaRegions();
-        
-        for (String replicaRegion : replicaRegions) {
-            if (!replicaRegion.equals(primaryRegion)) {
-                createReplicaInRegion(tenantId, primaryRegion, replicaRegion);
-            }
-        }
-    }
-}
-```
-
-**Interview Insight**: *Discuss data sovereignty and compliance requirements when implementing multi-region support. Explain how GDPR, data residency laws, and cross-border data transfer regulations affect database architecture decisions.*
-
----
-
-## Interview Questions & Answers
-
-### Architecture & Design Questions
-
-**Q: How would you handle database schema evolution across multiple tenants?**
-
-**A:** I would implement a versioned migration system with the following approach:
-
-1. **Migration Versioning**: Each migration has a version number and is applied in order
-2. **Tenant-Specific Tracking**: Track migration status per tenant in a dedicated `schema_migrations` table
-3. **Rollback Support**: Design migrations to be reversible when possible
-4. **Batch Processing**: Apply migrations to tenants in batches to avoid overwhelming the system
-5. **Validation**: Validate schema consistency after migrations complete
-
-```java
-// Example migration tracking
-public class MigrationTracker {
-    public void trackMigration(String tenantId, String version, MigrationStatus status) {
-        String sql = "INSERT INTO schema_migrations (tenant_id, version, status, applied_at) VALUES (?, ?, ?, ?)";
-        executeUpdate(sql, tenantId, version, status.name(), Timestamp.now());
-    }
-}
-```
-
-**Q: How do you prevent connection pool exhaustion in a multi-tenant environment?**
-
-**A:** Several strategies can be employed:
-
-1. **Tier-based Pool Sizing**: Different tenant tiers get different pool sizes
-2. **Dynamic Pool Adjustment**: Monitor usage patterns and adjust pool sizes
-3. **Connection Timeouts**: Set appropriate timeouts to prevent connection leaks
-4. **Circuit Breakers**: Implement circuit breakers to fail fast when pools are exhausted
-5. **Monitoring & Alerting**: Set up alerts for high pool utilization
-
-```java
-// Example dynamic pool adjustment
-@Scheduled(fixedRate = 60000)
-public void adjustPoolSizes() {
-    tenantPools.forEach((tenantId, pool) -> {
-        PoolMetrics metrics = getPoolMetrics(pool);
-        if (metrics.getUtilization() > 0.8) {
-            scaleUpPool(tenantId, pool);
-        } else if (metrics.getUtilization() < 0.2) {
-            scaleDownPool(tenantId, pool);
-        }
-    });
-}
-```
-
-### Performance & Scalability Questions
-
-**Q: How would you optimize database queries across different database providers?**
-
-**A:** Query optimization requires a multi-layered approach:
-
-1. **Provider-Specific Optimizations**: Each database provider has its own optimizer hints and features
-2. **Query Analysis**: Analyze query patterns to identify optimization opportunities
-3. **Index Management**: Automatically suggest and create indexes based on query patterns
-4. **Query Rewriting**: Transform queries to use database-specific optimizations
-5. **Caching Strategy**: Implement intelligent caching at multiple levels
-
-**Q: How do you handle database failover without losing data?**
-
-**A:** Implement a robust failover mechanism:
-
-1. **Synchronous Replication**: Use synchronous replication for critical data
-2. **Health Monitoring**: Continuous health checks with rapid failure detection
-3. **Automatic Failover**: Implement automatic failover with proper coordination
-4. **Connection Draining**: Gracefully drain connections during failover
-5. **Consistency Checks**: Verify data consistency after failover
-
-### Security & Compliance Questions
-
-**Q: How do you ensure tenant data isolation in a shared database environment?**
-
-**A:** Multiple isolation strategies can be implemented:
-
-1. **Database-Level Isolation**: Separate databases per tenant (strongest isolation)
-2. **Schema-Level Isolation**: Separate schemas within the same database
-3. **Row-Level Security**: Use database row-level security features
-4. **Application-Level Filtering**: Ensure all queries include tenant filters
-5. **Access Control**: Implement strict access controls and audit logging
-
-**Q: How would you implement audit logging for compliance requirements?**
-
-**A:** Comprehensive audit logging includes:
-
-1. **Data Access Logging**: Log all data access with user context
-2. **Schema Change Tracking**: Track all DDL operations
-3. **Connection Logging**: Log connection events and authentication
-4. **Query Logging**: Log sensitive query operations
-5. **Tamper-Proof Storage**: Store audit logs in immutable storage
-
----
-
-## Conclusion
-
-This Database SDK design provides a comprehensive solution for multi-tenant SaaS applications with the following key benefits:
-
-### Key Advantages
-
-1. **Flexibility**: Support for multiple database providers through SPI
-2. **Scalability**: Horizontal scaling through sharding and connection pooling
-3. **Isolation**: Strong tenant isolation with multiple strategies
-4. **Performance**: Optimized connection management and query caching
-5. **Observability**: Comprehensive monitoring and health checking
-6. **Reliability**: Failover support and graceful degradation
-
-### Implementation Roadmap
-
-**Phase 1: Core Infrastructure**
-- Implement basic SDK structure and SPI framework
-- Create MySQL and PostgreSQL providers
-- Set up connection pooling and tenant management
-
-**Phase 2: Advanced Features**
-- Add migration engine and schema management
-- Implement query optimization and caching
-- Add monitoring and health checks
-
-**Phase 3: Enterprise Features**
-- Implement sharding and multi-region support
-- Add advanced security features
-- Complete performance optimization
-
-**Phase 4: Operations & Maintenance**
-- Automated deployment and configuration
-- Advanced monitoring and alerting
-- Documentation and training
-
-### Success Metrics
-
-- **Performance**: Sub-100ms query response times
-- **Scalability**: Support for 10,000+ concurrent tenants
-- **Reliability**: 99.9% uptime with automatic failover
-- **Security**: Zero data breaches with complete audit trails
-
-This architecture provides a solid foundation for building scalable, secure, and maintainable multi-tenant database solutions that can grow with your SaaS platform's needs.
-
----
-
-*This document serves as a comprehensive guide for implementing a production-ready Database SDK. Each section can be expanded based on specific requirements and constraints of your particular use case.*
+A: We use adaptive connection pool sizing based on tenant activity. Inactive tenants have smaller pools, while active tenants get more connections. We also implement connection
