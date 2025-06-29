@@ -1008,3 +1008,543 @@ A: We use a versioned migration system where each tenant's database schema versi
 **Q: "How do you optimize connection pool usage?"**
 
 A: We use adaptive connection pool sizing based on tenant activity. Inactive tenants have smaller pools, while active tenants get more connections. We also implement connection
+
+## Advanced Features and Extensions
+
+### Tenant Database Sharding
+
+For high-scale scenarios, the SDK supports database sharding across multiple database servers:
+
+```java
+@Component
+public class TenantShardingManager {
+    
+    private final List<ShardConfig> shards;
+    private final ConsistentHashing<String> hashRing;
+    
+    public TenantShardingManager(List<ShardConfig> shards) {
+        this.shards = shards;
+        this.hashRing = new ConsistentHashing<>(
+            shards.stream().map(ShardConfig::getShardId).collect(Collectors.toList())
+        );
+    }
+    
+    public ShardConfig getShardForTenant(String tenantId) {
+        String shardId = hashRing.getNode(tenantId);
+        return shards.stream()
+            .filter(shard -> shard.getShardId().equals(shardId))
+            .findFirst()
+            .orElseThrow(() -> new ShardNotFoundException("Shard not found for tenant: " + tenantId));
+    }
+    
+    public void rebalanceShards() {
+        // Implement shard rebalancing logic
+        for (ShardConfig shard : shards) {
+            int currentLoad = calculateShardLoad(shard);
+            if (currentLoad > shard.getMaxCapacity() * 0.8) {
+                triggerShardSplit(shard);
+            }
+        }
+    }
+}
+```
+
+### Tenant Migration and Backup
+
+```java
+@Service
+public class TenantMigrationService {
+    
+    private final MultiTenantDatabaseSDK databaseSDK;
+    private final TenantBackupService backupService;
+    
+    public void migrateTenant(String tenantId, TenantConfig newConfig) {
+        try {
+            // Create backup before migration
+            String backupId = backupService.createBackup(tenantId);
+            
+            // Export tenant data
+            TenantData exportedData = exportTenantData(tenantId);
+            
+            // Create new tenant database
+            databaseSDK.createTenant(tenantId + "_new", newConfig);
+            
+            // Import data to new database
+            importTenantData(tenantId + "_new", exportedData);
+            
+            // Validate migration
+            if (validateMigration(tenantId, tenantId + "_new")) {
+                // Switch to new database
+                switchTenantDatabase(tenantId, newConfig);
+                
+                // Cleanup old database
+                databaseSDK.deleteTenant(tenantId + "_old");
+            } else {
+                // Rollback
+                restoreFromBackup(tenantId, backupId);
+            }
+            
+        } catch (Exception e) {
+            throw new TenantMigrationException("Migration failed for tenant: " + tenantId, e);
+        }
+    }
+    
+    private TenantData exportTenantData(String tenantId) {
+        TenantContext.setTenant(tenantId);
+        
+        TenantData data = new TenantData();
+        
+        // Export all tables
+        List<String> tables = databaseSDK.query(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = ?",
+            rs -> rs.getString("table_name"),
+            TenantContext.getCurrentDatabase()
+        );
+        
+        for (String table : tables) {
+            List<Map<String, Object>> tableData = databaseSDK.query(
+                "SELECT * FROM " + table,
+                this::mapRowToMap
+            );
+            data.addTableData(table, tableData);
+        }
+        
+        return data;
+    }
+}
+```
+
+### Read Replica Support
+
+```java
+@Component
+public class ReadReplicaManager {
+    
+    private final Map<String, List<DataSource>> readReplicas = new ConcurrentHashMap<>();
+    private final LoadBalancer loadBalancer;
+    
+    public DataSource getReadDataSource(String tenantId) {
+        List<DataSource> replicas = readReplicas.get(tenantId);
+        if (replicas == null || replicas.isEmpty()) {
+            return connectionPoolManager.getDataSource(tenantId); // Fallback to master
+        }
+        
+        return loadBalancer.selectDataSource(replicas);
+    }
+    
+    public void addReadReplica(String tenantId, TenantConfig replicaConfig) {
+        DataSource replicaDataSource = createDataSource(replicaConfig);
+        readReplicas.computeIfAbsent(tenantId, k -> new ArrayList<>()).add(replicaDataSource);
+    }
+    
+    @Scheduled(fixedRate = 30000)
+    public void monitorReplicaHealth() {
+        readReplicas.forEach((tenantId, replicas) -> {
+            replicas.removeIf(replica -> !isHealthy(replica));
+        });
+    }
+}
+```
+
+### Multi-Database Transaction Support
+
+```java
+@Component
+public class MultiTenantTransactionManager {
+    
+    private final PlatformTransactionManager transactionManager;
+    
+    public void executeMultiTenantTransaction(List<String> tenantIds, 
+                                            MultiTenantTransactionCallback callback) {
+        
+        TransactionStatus status = transactionManager.getTransaction(
+            new DefaultTransactionDefinition()
+        );
+        
+        try {
+            Map<String, Connection> connections = new HashMap<>();
+            
+            // Get connections for all tenants
+            for (String tenantId : tenantIds) {
+                DataSource dataSource = connectionPoolManager.getDataSource(tenantId);
+                connections.put(tenantId, dataSource.getConnection());
+            }
+            
+            // Execute callback with all connections
+            callback.doInTransaction(connections);
+            
+            // Commit all transactions
+            connections.values().forEach(conn -> {
+                try {
+                    conn.commit();
+                } catch (SQLException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            
+            transactionManager.commit(status);
+            
+        } catch (Exception e) {
+            transactionManager.rollback(status);
+            throw new MultiTenantTransactionException("Multi-tenant transaction failed", e);
+        }
+    }
+}
+```
+
+## Performance Benchmarking and Optimization
+
+### Benchmark Results
+
+```java
+@Component
+public class PerformanceBenchmark {
+    
+    private final MultiTenantDatabaseSDK sdk;
+    private final MeterRegistry meterRegistry;
+    
+    @EventListener
+    @Async
+    public void benchmarkOnStartup(ApplicationReadyEvent event) {
+        runConnectionPoolBenchmark();
+        runTenantSwitchingBenchmark();
+        runConcurrentAccessBenchmark();
+    }
+    
+    private void runConnectionPoolBenchmark() {
+        Timer.Sample sample = Timer.start(meterRegistry);
+        
+        // Test connection acquisition time
+        long startTime = System.nanoTime();
+        
+        for (int i = 0; i < 1000; i++) {
+            String tenantId = "tenant-" + (i % 10);
+            TenantContext.setTenant(tenantId);
+            
+            sdk.query("SELECT 1", rs -> rs.getInt(1));
+        }
+        
+        long endTime = System.nanoTime();
+        sample.stop(Timer.builder("benchmark.connection.pool").register(meterRegistry));
+        
+        log.info("Connection pool benchmark: {} ms", (endTime - startTime) / 1_000_000);
+    }
+    
+    private void runTenantSwitchingBenchmark() {
+        int iterations = 10000;
+        long startTime = System.nanoTime();
+        
+        for (int i = 0; i < iterations; i++) {
+            String tenantId = "tenant-" + (i % 100);
+            TenantContext.setTenant(tenantId);
+            // Simulate tenant switching overhead
+        }
+        
+        long endTime = System.nanoTime();
+        double avgSwitchTime = (endTime - startTime) / 1_000_000.0 / iterations;
+        
+        log.info("Average tenant switching time: {} ms", avgSwitchTime);
+    }
+}
+```
+
+### Performance Optimization Recommendations
+
+{% mermaid graph LR %}
+    A[Performance Optimization] --> B[Connection Pooling]
+    A --> C[Caching Strategy]
+    A --> D[Query Optimization]
+    A --> E[Resource Management]
+    
+    B --> B1[HikariCP Configuration]
+    B --> B2[Pool Size Tuning]
+    B --> B3[Connection Validation]
+    
+    C --> C1[Tenant Config Cache]
+    C --> C2[Query Result Cache]
+    C --> C3[Schema Cache]
+    
+    D --> D1[Prepared Statements]
+    D --> D2[Batch Operations]
+    D --> D3[Index Optimization]
+    
+    E --> E1[Memory Management]
+    E --> E2[Thread Pool Tuning]
+    E --> E3[GC Optimization]
+{% endmermaid %}
+
+## Security Best Practices
+
+### Security Architecture
+
+{% mermaid graph TB %}
+    A[Client Request] --> B[API Gateway]
+    B --> C[Authentication Service]
+    C --> D[Tenant Authorization]
+    D --> E[Multi-Tenant SDK]
+    E --> F[Security Validator]
+    F --> G[Encrypted Connection]
+    G --> H[Tenant Database]
+    
+    I[Security Layers]
+    I --> J[Network Security]
+    I --> K[Application Security]
+    I --> L[Database Security]
+    I --> M[Data Encryption]
+{% endmermaid %}
+
+### Advanced Security Features
+
+```java
+@Component
+public class TenantSecurityEnforcer {
+    
+    private final TenantPermissionService permissionService;
+    private final AuditLogService auditService;
+    
+    @Around("@annotation(SecureTenantOperation)")
+    public Object enforceSecurityz(ProceedingJoinPoint joinPoint) throws Throwable {
+        String tenantId = TenantContext.getCurrentTenant();
+        String operation = joinPoint.getSignature().getName();
+        
+        // Validate tenant access
+        if (!permissionService.hasPermission(tenantId, operation)) {
+            auditService.logUnauthorizedAccess(tenantId, operation);
+            throw new TenantAccessDeniedException("Access denied for operation: " + operation);
+        }
+        
+        // Rate limiting
+        if (!rateLimiter.tryAcquire(tenantId)) {
+            throw new RateLimitExceededException("Rate limit exceeded for tenant: " + tenantId);
+        }
+        
+        try {
+            Object result = joinPoint.proceed();
+            auditService.logSuccessfulOperation(tenantId, operation);
+            return result;
+        } catch (Exception e) {
+            auditService.logFailedOperation(tenantId, operation, e);
+            throw e;
+        }
+    }
+}
+```
+
+### Data Masking and Privacy
+
+```java
+@Component
+public class DataPrivacyManager {
+    
+    private final Map<String, DataMaskingRule> maskingRules;
+    
+    public ResultSet maskSensitiveData(ResultSet resultSet, String tenantId) throws SQLException {
+        TenantPrivacyConfig config = getPrivacyConfig(tenantId);
+        
+        while (resultSet.next()) {
+            for (DataMaskingRule rule : config.getMaskingRules()) {
+                String columnName = rule.getColumnName();
+                String originalValue = resultSet.getString(columnName);
+                String maskedValue = applyMasking(originalValue, rule.getMaskingType());
+                
+                // Update result set with masked value
+                ((UpdatableResultSet) resultSet).updateString(columnName, maskedValue);
+            }
+        }
+        
+        return resultSet;
+    }
+    
+    private String applyMasking(String value, MaskingType type) {
+        switch (type) {
+            case EMAIL:
+                return maskEmail(value);
+            case PHONE:
+                return maskPhone(value);
+            case CREDIT_CARD:
+                return maskCreditCard(value);
+            default:
+                return value;
+        }
+    }
+}
+```
+
+## Disaster Recovery and High Availability
+
+### Backup and Recovery Strategy
+
+```java
+@Service
+public class TenantBackupService {
+    
+    private final CloudStorageService storageService;
+    private final DatabaseProvider databaseProvider;
+    
+    @Scheduled(cron = "0 0 2 * * *") // Daily at 2 AM
+    public void performScheduledBackups() {
+        List<String> activeTenants = getActiveTenants();
+        
+        activeTenants.parallelStream().forEach(tenantId -> {
+            try {
+                BackupResult result = createBackup(tenantId);
+                storageService.uploadBackup(result);
+                cleanupOldBackups(tenantId);
+            } catch (Exception e) {
+                log.error("Backup failed for tenant: {}", tenantId, e);
+                alertService.sendBackupFailureAlert(tenantId, e);
+            }
+        });
+    }
+    
+    public String createBackup(String tenantId) {
+        String backupId = generateBackupId(tenantId);
+        
+        try {
+            TenantContext.setTenant(tenantId);
+            DataSource dataSource = connectionPoolManager.getDataSource(tenantId);
+            
+            BackupConfig config = BackupConfig.builder()
+                .tenantId(tenantId)
+                .backupId(backupId)
+                .timestamp(Instant.now())
+                .compressionEnabled(true)
+                .encryptionEnabled(true)
+                .build();
+            
+            databaseProvider.createBackup(dataSource, config);
+            
+            return backupId;
+            
+        } catch (Exception e) {
+            throw new BackupException("Backup creation failed for tenant: " + tenantId, e);
+        }
+    }
+    
+    public void restoreFromBackup(String tenantId, String backupId) {
+        try {
+            BackupMetadata metadata = getBackupMetadata(tenantId, backupId);
+            InputStream backupStream = storageService.downloadBackup(metadata.getStoragePath());
+            
+            // Create temporary database for restoration
+            String tempTenantId = tenantId + "_restore_" + System.currentTimeMillis();
+            databaseProvider.restoreFromBackup(tempTenantId, backupStream);
+            
+            // Validate restoration
+            if (validateRestoration(tenantId, tempTenantId)) {
+                // Switch to restored database
+                switchTenantDatabase(tenantId, tempTenantId);
+            } else {
+                throw new RestoreException("Backup validation failed");
+            }
+            
+        } catch (Exception e) {
+            throw new RestoreException("Restoration failed for tenant: " + tenantId, e);
+        }
+    }
+}
+```
+
+### High Availability Configuration
+
+```java
+@Configuration
+public class HighAvailabilityConfig {
+    
+    @Bean
+    public LoadBalancer databaseLoadBalancer() {
+        return LoadBalancer.builder()
+            .algorithm(LoadBalancingAlgorithm.ROUND_ROBIN)
+            .healthCheckInterval(Duration.ofSeconds(30))
+            .failoverTimeout(Duration.ofSeconds(5))
+            .build();
+    }
+    
+    @Bean
+    public FailoverManager failoverManager() {
+        return new FailoverManager(databaseProviderFactory, alertService);
+    }
+}
+
+@Component
+public class FailoverManager {
+    
+    private final Map<String, List<TenantConfig>> replicaConfigs = new ConcurrentHashMap<>();
+    
+    @EventListener
+    public void handleDatabaseFailure(DatabaseFailureEvent event) {
+        String tenantId = event.getTenantId();
+        
+        log.warn("Database failure detected for tenant: {}", tenantId);
+        
+        List<TenantConfig> replicas = replicaConfigs.get(tenantId);
+        if (replicas != null && !replicas.isEmpty()) {
+            for (TenantConfig replica : replicas) {
+                if (isHealthy(replica)) {
+                    performFailover(tenantId, replica);
+                    break;
+                }
+            }
+        } else {
+            alertService.sendCriticalAlert("No healthy replicas available for tenant: " + tenantId);
+        }
+    }
+    
+    private void performFailover(String tenantId, TenantConfig replicaConfig) {
+        try {
+            // Update connection pool to use replica
+            connectionPoolManager.updateDataSource(tenantId, replicaConfig);
+            
+            // Update tenant configuration
+            tenantConfigRepository.updateConfig(tenantId, replicaConfig);
+            
+            log.info("Failover completed for tenant: {}", tenantId);
+            alertService.sendFailoverAlert(tenantId, replicaConfig.getHost());
+            
+        } catch (Exception e) {
+            log.error("Failover failed for tenant: {}", tenantId, e);
+            alertService.sendFailoverFailureAlert(tenantId, e);
+        }
+    }
+}
+```
+
+## External References and Resources
+
+### Documentation and Specifications
+- [HikariCP Configuration Guide](https://github.com/brettwooldridge/HikariCP#configuration-knobs-baby)
+- [Java SPI Tutorial](https://docs.oracle.com/javase/tutorial/ext/basics/spi.html)
+- [Spring Boot Multi-Tenancy](https://spring.io/blog/2022/07/31/how-to-integrate-hibernates-multitenant-feature-with-spring-data-jpa-in-a-spring-boot-application)
+- [PostgreSQL Multi-Tenant Patterns](https://www.postgresql.org/docs/current/ddl-schemas.html)
+- [MySQL Multi-Tenancy Best Practices](https://dev.mysql.com/doc/refman/8.0/en/multiple-servers.html)
+
+### Performance and Monitoring
+- [Micrometer Metrics](https://micrometer.io/docs)
+- [Connection Pool Monitoring](https://github.com/brettwooldridge/HikariCP/wiki/MBean-(JMX)-Monitoring-and-Management)
+- [Database Performance Tuning](https://use-the-index-luke.com/)
+
+### Security Resources
+- [OWASP Database Security](https://owasp.org/www-project-database-security/)
+- [Multi-Tenant Security Patterns](https://docs.microsoft.com/en-us/azure/architecture/guide/multitenant/considerations/data-partitioning)
+- [SQL Injection Prevention](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
+
+### Cloud and DevOps
+- [Kubernetes Database Operators](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
+- [Docker Multi-Stage Builds](https://docs.docker.com/develop/dev-best-practices/)
+- [Terraform Database Provisioning](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/db_instance)
+
+## Conclusion
+
+This Multi-Tenant Database SDK provides a comprehensive solution for managing database operations across multiple tenants in a SaaS environment. The design emphasizes security, performance, and scalability while maintaining simplicity for developers.
+
+Key benefits of this architecture include:
+
+- **Strong tenant isolation** through database-per-tenant approach
+- **High performance** via connection pooling and caching strategies
+- **Extensibility** through SPI pattern for database providers
+- **Production readiness** with monitoring, backup, and failover capabilities
+- **Security** with encryption, audit logging, and access controls
+
+The SDK can be extended to support additional database providers, implement more sophisticated sharding strategies, or integrate with cloud-native services. Regular monitoring and performance tuning ensure optimal operation in production environments.
+
+Remember to adapt the configuration and implementation details based on your specific requirements, such as tenant scale, database types, and compliance needs. The provided examples serve as a solid foundation for building a robust multi-tenant database solution.
