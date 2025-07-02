@@ -367,8 +367,7 @@ components:
 
 ### Request/Response Flow
 
-```mermaid
-flowchart TD
+{% mermaid flowchart TD %}
     A[Client Request] --> B{Request Validation}
     B -->|Valid| C[Authentication & Authorization]
     B -->|Invalid| D[Return 400 Bad Request]
@@ -386,7 +385,7 @@ flowchart TD
     K --> L[Return Success Response]
     
     J --> M[Return Error Response]
-```
+{% endmermaid %}
 
 **💡 Interview Insight**: *API design considerations include idempotency for upload operations, proper HTTP status codes, and consistent error response format. Discuss rate limiting and API versioning strategies for production systems.*
 
@@ -564,7 +563,7 @@ public class NFSDriver implements FileSystemDriver {
 
 ### Storage Selection Strategy
 
-{% mermaid flowchart %}
+{% mermaid flowchart TD %}
     A[File Upload Request] --> B{File Size Check}
     B -->|< 100MB| C{Performance Priority?}
     B -->|> 100MB| D{Durability Priority?}
