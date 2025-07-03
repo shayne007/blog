@@ -41,7 +41,7 @@ The architecture employs a microservices approach, integrating multiple AI techn
     subgraph "Service Layer"
         H[ConversationService] --> I[AIWorkflowEngineService]
         I --> J[WorkflowEngineService]
-        J --> K[KnowledgeBaseService]
+        H --> K[KnowledgeBaseService]
     end
     
     subgraph "AI Layer"
