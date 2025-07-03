@@ -4,62 +4,92 @@ date: 2025-07-02 17:39:48
 tags:
 ---
 
-## Executive Summary
+## Overview
 
-This document presents a comprehensive design for a modern FinTech AI-powered lending system that combines traditional workflow engines with artificial intelligence to automate and enhance the personal loan approval process. The system integrates multiple external services, implements intelligent decision-making through AI agents, and provides a seamless user experience through an interactive chat interface.
+### Introduction
 
-## System Architecture Overview
+The FinTech AI Workflow and Chat System represents a comprehensive lending platform that combines traditional workflow automation with artificial intelligence capabilities. This system streamlines the personal loan application process through intelligent automation while maintaining human oversight at critical decision points.
 
-The system consists of five core components working in harmony to deliver an intelligent, automated lending platform:
+The architecture employs a microservices approach, integrating multiple AI technologies including Large Language Models (LLMs), Retrieval-Augmented Generation (RAG), and intelligent agents to create a seamless lending experience. The system processes over 2000 concurrent conversations with an average response time of 30 seconds, demonstrating enterprise-grade performance.
 
-{% mermaid graph TB %}
-    subgraph "User Interface Layer"
-        A[ChatWebUI]
+**Key Business Benefits:**
+- **Reduced Processing Time**: From days to minutes for loan approvals
+- **Enhanced Accuracy**: AI-powered risk assessment reduces default rates
+- **Improved Customer Experience**: 24/7 availability with multi-modal interaction
+- **Regulatory Compliance**: Built-in compliance checks and audit trails
+- **Cost Efficiency**: Automated workflows reduce operational costs by 60%
+
+
+**Key Interview Question**: *"How would you design a scalable FinTech system that balances automation with regulatory compliance?"*
+
+**Reference Answer**: The system employs a layered architecture with clear separation of concerns. The workflow engine handles business logic while maintaining audit trails for regulatory compliance. AI components augment human decision-making rather than replacing it entirely, ensuring transparency and accountability. The microservices architecture allows for independent scaling of components based on demand.
+
+### Architecture Design
+
+{% mermaid flowchart TB %}
+    subgraph "Frontend Layer"
+        A[ChatWebUI] --> B[React/Vue Components]
+        B --> C[Multi-Modal Input Handler]
     end
     
-    subgraph "AI Processing Layer"
-        B[AIWorkflowEngineService]
-        C[KnowledgeBaseService]
+    subgraph "Gateway Layer"
+        D[Higress AI Gateway] --> E[Load Balancer]
+        E --> F[Multi-Model Provider]
+        F --> G[Context Memory - mem0]
     end
     
-    subgraph "Traditional Processing Layer"
-        D[WorkflowEngineService]
-        E[Rule Engine]
+    subgraph "Service Layer"
+        H[ConversationService] --> I[AIWorkflowEngineService]
+        I --> J[WorkflowEngineService]
+        J --> K[KnowledgeBaseService]
+    end
+    
+    subgraph "AI Layer"
+        L[LLM Providers] --> M[ReAct Pattern Engine]
+        M --> N[MCP Server Agents]
+        N --> O[RAG System]
     end
     
     subgraph "External Systems"
-        F[BankCreditSystem]
-        G[TaxSystem]
-        H[SocialSecuritySystem]
+        P[BankCreditSystem]
+        Q[TaxSystem]
+        R[SocialSecuritySystem]
+        S[Rule Engine]
     end
     
-    subgraph "Data Layer"
-        I[Vector Database]
-        J[Relational Database]
-        K[Document Store]
+    subgraph "Configuration"
+        T[Nacos Config Center]
+        U[Prompt Templates]
     end
     
-    A --> B
-    A --> C
-    B --> D
-    B --> E
-    D --> F
-    D --> G
+    A --> D
     D --> H
-    C --> I
-    B --> J
-    A --> K
+    H --> L
+    I --> P
+    I --> Q
+    I --> R
+    J --> S
+    K --> O
+    T --> U
+    U --> L
 {% endmermaid %}
 
-**Interview Question**: *"How would you design a scalable architecture for a lending system that needs to handle both traditional rule-based processing and AI-driven decision making?"*
+The architecture follows a distributed microservices pattern with clear separation between presentation, business logic, and data layers. The AI Gateway serves as the entry point for all AI-related operations, providing load balancing and context management across multiple LLM providers.
 
-**Answer**: The key is to implement a layered architecture where the AI layer enhances rather than replaces traditional systems. Use microservices for each component, implement event-driven communication, and ensure fallback mechanisms to traditional rule engines when AI components are unavailable.
+## Core Components
 
-## WorkflowEngineService - Traditional Foundation
+### WorkflowEngineService
 
-### Core Workflow Implementation
+The WorkflowEngineService serves as the backbone of the lending process, orchestrating the three-stage review workflow: Initial Review, Review, and Final Review.
 
-The WorkflowEngineService implements a three-stage lending process using Spring Boot's robust framework:
+**Core Responsibilities:**
+- Workflow orchestration and state management
+- External system integration
+- Business rule execution
+- Audit trail maintenance
+- SLA monitoring and enforcement
+
+**Implementation Architecture:**
 
 ```java
 @Service
@@ -67,278 +97,212 @@ The WorkflowEngineService implements a three-stage lending process using Spring 
 public class WorkflowEngineService {
     
     @Autowired
-    private ExternalServiceClient externalServiceClient;
+    private LoanApplicationRepository loanRepo;
     
     @Autowired
-    private RuleEngine ruleEngine;
+    private ExternalIntegrationService integrationService;
     
-    public LoanApplicationResult processLoanApplication(LoanApplication application) {
-        WorkflowContext context = new WorkflowContext(application);
-        
+    @Autowired
+    private RuleEngineService ruleEngine;
+    
+    @Autowired
+    private NotificationService notificationService;
+    
+    public WorkflowResult processLoanApplication(LoanApplication application) {
         try {
-            // Stage 1: Initial Review
-            InitialReviewResult initialResult = performInitialReview(context);
-            if (!initialResult.isApproved()) {
-                return LoanApplicationResult.rejected(initialResult.getReason());
+            // Initialize workflow
+            WorkflowInstance workflow = initializeWorkflow(application);
+            
+            // Execute initial review
+            InitialReviewResult initialResult = executeInitialReview(application);
+            workflow.updateStage(WorkflowStage.INITIAL_REVIEW, initialResult);
+            
+            if (initialResult.isApproved()) {
+                // Proceed to detailed review
+                DetailedReviewResult detailedResult = executeDetailedReview(application);
+                workflow.updateStage(WorkflowStage.DETAILED_REVIEW, detailedResult);
+                
+                if (detailedResult.isApproved()) {
+                    // Final review
+                    FinalReviewResult finalResult = executeFinalReview(application);
+                    workflow.updateStage(WorkflowStage.FINAL_REVIEW, finalResult);
+                    
+                    return WorkflowResult.builder()
+                        .status(finalResult.isApproved() ? 
+                            WorkflowStatus.APPROVED : WorkflowStatus.REJECTED)
+                        .workflowId(workflow.getId())
+                        .build();
+                }
             }
             
-            // Stage 2: Detailed Review
-            DetailedReviewResult detailedResult = performDetailedReview(context);
-            if (!detailedResult.isApproved()) {
-                return LoanApplicationResult.rejected(detailedResult.getReason());
-            }
-            
-            // Stage 3: Final Review
-            FinalReviewResult finalResult = performFinalReview(context);
-            return LoanApplicationResult.builder()
-                .approved(finalResult.isApproved())
-                .loanAmount(finalResult.getApprovedAmount())
-                .interestRate(finalResult.getInterestRate())
-                .terms(finalResult.getTerms())
+            return WorkflowResult.builder()
+                .status(WorkflowStatus.REJECTED)
+                .workflowId(workflow.getId())
                 .build();
                 
         } catch (Exception e) {
-            log.error("Error processing loan application", e);
-            return LoanApplicationResult.error("System error occurred");
+            log.error("Workflow processing failed", e);
+            return handleWorkflowError(application, e);
         }
     }
     
-    private InitialReviewResult performInitialReview(WorkflowContext context) {
-        // Basic eligibility checks
-        CustomerData customer = context.getCustomer();
-        
-        if (customer.getAge() < 18 || customer.getAge() > 75) {
-            return InitialReviewResult.rejected("Age not within acceptable range");
+    private InitialReviewResult executeInitialReview(LoanApplication application) {
+        // Validate basic information
+        ValidationResult validation = validateBasicInfo(application);
+        if (!validation.isValid()) {
+            return InitialReviewResult.rejected(validation.getErrors());
         }
         
-        if (customer.getAnnualIncome() < 30000) {
-            return InitialReviewResult.rejected("Minimum income requirement not met");
-        }
+        // Check credit score
+        CreditScoreResult creditScore = integrationService.getCreditScore(
+            application.getApplicantId());
         
-        return InitialReviewResult.approved();
-    }
-    
-    private DetailedReviewResult performDetailedReview(WorkflowContext context) {
-        // External system calls for comprehensive review
-        CompletableFuture<CreditReport> creditFuture = 
-            externalServiceClient.getCreditReport(context.getCustomer().getSsn());
-        CompletableFuture<TaxRecord> taxFuture = 
-            externalServiceClient.getTaxRecord(context.getCustomer().getTaxId());
-        CompletableFuture<EmploymentRecord> employmentFuture = 
-            externalServiceClient.getEmploymentRecord(context.getCustomer().getSsn());
+        // Apply initial screening rules
+        RuleResult ruleResult = ruleEngine.evaluateInitialRules(
+            application, creditScore);
         
-        try {
-            CreditReport creditReport = creditFuture.get(5, TimeUnit.SECONDS);
-            TaxRecord taxRecord = taxFuture.get(5, TimeUnit.SECONDS);
-            EmploymentRecord employment = employmentFuture.get(5, TimeUnit.SECONDS);
-            
-            // Calculate risk score using rule engine
-            RiskAssessment risk = ruleEngine.calculateRisk(
-                context.getCustomer(), creditReport, taxRecord, employment);
-            
-            if (risk.getScore() < 600) {
-                return DetailedReviewResult.rejected("Credit score too low");
-            }
-            
-            return DetailedReviewResult.approved(risk);
-            
-        } catch (TimeoutException e) {
-            throw new ExternalServiceException("External service timeout", e);
-        }
+        return InitialReviewResult.builder()
+            .approved(ruleResult.isApproved())
+            .creditScore(creditScore.getScore())
+            .reasons(ruleResult.getReasons())
+            .build();
     }
 }
 ```
 
-### External Service Integration Patterns
+**Three-Stage Review Process:**
 
-**Circuit Breaker Pattern Implementation**:
+1. **Initial Review**: Automated screening based on basic criteria
+   - Identity verification
+   - Credit score check
+   - Basic eligibility validation
+   - Fraud detection algorithms
+
+2. **Detailed Review**: Comprehensive analysis of financial capacity
+   - Income verification through tax systems
+   - Employment history validation
+   - Debt-to-income ratio calculation
+   - Collateral assessment (if applicable)
+
+3. **Final Review**: Human oversight and final approval
+   - Risk assessment confirmation
+   - Regulatory compliance check
+   - Manual review of edge cases
+   - Final approval or rejection
+
+**External System Integration:**
 
 ```java
 @Component
-public class ExternalServiceClient {
+public class ExternalIntegrationService {
     
-    private final CircuitBreaker creditServiceBreaker;
-    private final RetryTemplate retryTemplate;
+    @Autowired
+    private BankCreditSystemClient bankCreditClient;
     
-    public ExternalServiceClient() {
-        this.creditServiceBreaker = CircuitBreaker.ofDefaults("creditService");
-        this.retryTemplate = RetryTemplate.builder()
-            .maxAttempts(3)
-            .exponentialBackoff(1000, 2, 10000)
-            .build();
+    @Autowired
+    private TaxSystemClient taxClient;
+    
+    @Autowired
+    private SocialSecuritySystemClient socialSecurityClient;
+    
+    @Retryable(value = {Exception.class}, maxAttempts = 3)
+    public CreditScoreResult getCreditScore(String applicantId) {
+        return bankCreditClient.getCreditScore(applicantId);
     }
     
-    public CompletableFuture<CreditReport> getCreditReport(String ssn) {
-        return CompletableFuture.supplyAsync(() -> 
-            creditServiceBreaker.executeSupplier(() -> 
-                retryTemplate.execute(context -> 
-                    callBankCreditSystem(ssn))));
+    @Retryable(value = {Exception.class}, maxAttempts = 3)
+    public TaxInformationResult getTaxInformation(String applicantId, int years) {
+        return taxClient.getTaxInformation(applicantId, years);
     }
     
-    private CreditReport callBankCreditSystem(String ssn) {
-        // Implementation with proper error handling
-        RestTemplate restTemplate = new RestTemplate();
-        return restTemplate.getForObject(
-            "https://api.bankcredit.com/report/{ssn}", 
-            CreditReport.class, ssn);
+    @Retryable(value = {Exception.class}, maxAttempts = 3)
+    public SocialSecurityResult getSocialSecurityInfo(String applicantId) {
+        return socialSecurityClient.getSocialSecurityInfo(applicantId);
     }
 }
 ```
 
-## AIWorkflowEngineService - Intelligent Enhancement
+**Key Interview Question**: *"How do you handle transaction consistency across multiple external system calls in a workflow?"*
 
-### Spring AI Integration
+**Reference Answer**: The system uses the Saga pattern for distributed transactions. Each step in the workflow is designed as a compensable transaction. If a step fails, the system executes compensation actions to maintain consistency. For example, if the final review fails after initial approvals, the system automatically triggers cleanup processes to revert any provisional approvals.
 
-The AI-enhanced workflow engine leverages Spring AI to provide intelligent decision-making capabilities:
+### AIWorkflowEngineService
+
+The AIWorkflowEngineService leverages Spring AI to provide intelligent automation of the lending process, reducing manual intervention while maintaining accuracy.
 
 ```java
 @Service
+@Sl4j
 public class AIWorkflowEngineService {
     
     @Autowired
-    private ChatClient chatClient;
+    private ChatModel chatModel;
     
     @Autowired
-    private VectorStore vectorStore;
+    private PromptTemplateService promptTemplateService;
     
     @Autowired
-    private WorkflowEngineService traditionalService;
+    private WorkflowEngineService traditionalWorkflowService;
     
-    public LoanApplicationResult processLoanApplicationWithAI(
-            LoanApplication application, List<Document> supportingDocs) {
+    public AIWorkflowResult processLoanApplicationWithAI(LoanApplication application) {
+        // First, gather all relevant data
+        ApplicationContext context = gatherApplicationContext(application);
         
-        // Generate AI-enhanced risk assessment
-        AIRiskAssessment aiRisk = generateAIRiskAssessment(application, supportingDocs);
+        // Use AI to perform initial assessment
+        AIAssessmentResult aiAssessment = performAIAssessment(context);
         
-        // Combine traditional and AI assessments
-        LoanApplicationResult traditionalResult = 
-            traditionalService.processLoanApplication(application);
-        
-        return combineAssessments(traditionalResult, aiRisk);
+        // Decide whether to proceed with full automated flow or human review
+        if (aiAssessment.getConfidenceScore() > 0.85) {
+            return processAutomatedFlow(context, aiAssessment);
+        } else {
+            return processHybridFlow(context, aiAssessment);
+        }
     }
     
-    private AIRiskAssessment generateAIRiskAssessment(
-            LoanApplication application, List<Document> docs) {
+    private AIAssessmentResult performAIAssessment(ApplicationContext context) {
+        String promptTemplate = promptTemplateService.getTemplate("loan_assessment");
         
-        // Document analysis using AI
-        String documentAnalysis = analyzeDocuments(docs);
+        Map<String, Object> variables = Map.of(
+            "applicantData", context.getApplicantData(),
+            "creditHistory", context.getCreditHistory(),
+            "financialData", context.getFinancialData()
+        );
         
-        // Create comprehensive prompt for risk assessment
-        String prompt = String.format("""
-            Analyze this loan application for risk assessment:
-            
-            Applicant Information:
-            - Name: %s
-            - Age: %d
-            - Annual Income: $%,.2f
-            - Employment: %s
-            - Requested Amount: $%,.2f
-            
-            Document Analysis:
-            %s
-            
-            Provide a risk score (0-1000) and detailed reasoning for:
-            1. Credit worthiness
-            2. Income stability
-            3. Debt-to-income ratio
-            4. Overall recommendation
-            
-            Format your response as JSON with fields: riskScore, reasoning, recommendation.
-            """, 
-            application.getApplicantName(),
-            application.getAge(),
-            application.getAnnualIncome(),
-            application.getEmployment(),
-            application.getRequestedAmount(),
-            documentAnalysis);
-        
-        ChatResponse response = chatClient.call(
-            new Prompt(prompt, 
-                OpenAiChatOptions.builder()
-                    .withModel("gpt-4")
-                    .withTemperature(0.1f)
-                    .build()));
+        Prompt prompt = new PromptTemplate(promptTemplate, variables).create();
+        ChatResponse response = chatModel.call(prompt);
         
         return parseAIResponse(response.getResult().getOutput().getContent());
     }
     
-    private String analyzeDocuments(List<Document> docs) {
-        StringBuilder analysis = new StringBuilder();
-        
-        for (Document doc : docs) {
-            String prompt = "Analyze this financial document and extract key information: " + 
-                           doc.getContent();
-            
-            ChatResponse response = chatClient.call(new Prompt(prompt));
-            analysis.append(response.getResult().getOutput().getContent()).append("\n");
+    private AIAssessmentResult parseAIResponse(String aiResponse) {
+        // Parse structured AI response
+        ObjectMapper mapper = new ObjectMapper();
+        try {
+            return mapper.readValue(aiResponse, AIAssessmentResult.class);
+        } catch (JsonProcessingException e) {
+            log.error("Failed to parse AI response", e);
+            return AIAssessmentResult.lowConfidence();
         }
-        
-        return analysis.toString();
     }
 }
 ```
 
-### Intelligent Decision Trees
+**Key Interview Question**: *"How do you ensure AI decisions are explainable and auditable in a regulated financial environment?"*
 
-```java
-@Component
-public class AIDecisionEngine {
-    
-    @Autowired
-    private ChatClient chatClient;
-    
-    public LoanDecision makeIntelligentDecision(LoanContext context) {
-        // Multi-factor AI analysis
-        String riskPrompt = buildRiskAnalysisPrompt(context);
-        
-        ChatResponse riskResponse = chatClient.call(
-            new Prompt(riskPrompt,
-                OpenAiChatOptions.builder()
-                    .withModel("gpt-4")
-                    .withTemperature(0.0f) // Deterministic for financial decisions
-                    .build()));
-        
-        RiskAssessment aiRisk = parseRiskResponse(riskResponse);
-        
-        // Apply business rules with AI insights
-        return applyDecisionRules(context, aiRisk);
-    }
-    
-    private String buildRiskAnalysisPrompt(LoanContext context) {
-        return String.format("""
-            You are a senior loan officer with 20 years of experience. 
-            Analyze this loan application comprehensively:
-            
-            Financial Profile:
-            %s
-            
-            Consider these factors:
-            1. Credit history patterns and trends
-            2. Income stability and growth trajectory
-            3. Debt service coverage ratio
-            4. Industry and employment risk factors
-            5. Macroeconomic conditions impact
-            
-            Provide your analysis in this JSON format:
-            {
-                "creditworthiness": {"score": 0-100, "reasoning": "..."},
-                "income_stability": {"score": 0-100, "reasoning": "..."},
-                "debt_capacity": {"score": 0-100, "reasoning": "..."},
-                "overall_risk": {"level": "LOW|MEDIUM|HIGH", "score": 0-100},
-                "recommendation": {"action": "APPROVE|CONDITIONAL|REJECT", "conditions": "..."}
-            }
-            """, context.getFinancialProfile());
-    }
-}
-```
+**Reference Answer**: The system maintains detailed audit logs for every AI decision, including the input data, prompt templates used, model responses, and confidence scores. Each AI assessment includes reasoning chains that explain the decision logic. For regulatory compliance, the system can replay any decision by re-running the same prompt with the same input data, ensuring reproducibility and transparency.
 
-**Interview Question**: *"How do you ensure AI decision-making in financial systems is both accurate and explainable for regulatory compliance?"*
+### ChatWebUI
 
-**Answer**: Implement a hybrid approach where AI provides risk insights and recommendations, but final decisions follow deterministic business rules. Use structured prompts with clear reasoning requirements, maintain decision audit trails, and implement confidence thresholds where low-confidence AI decisions fall back to human review.
+The ChatWebUI serves as the primary interface for user interaction, supporting multi-modal communication including text, files, images, and audio.
 
-## ChatWebUI - Interactive User Experience
+**Key Features:**
+- **Multi-Modal Input**: Text, voice, image, and document upload
+- **Real-Time Chat**: WebSocket-based instant messaging
+- **Progressive Web App**: Mobile-responsive design
+- **Accessibility**: WCAG 2.1 compliant interface
+- **Internationalization**: Multi-language support
 
-### Multi-Modal Chat Interface
+**React-based Implementation:**
 
 ```java
 @RestController
@@ -346,1142 +310,1423 @@ public class AIDecisionEngine {
 public class ChatController {
     
     @Autowired
-    private ChatService chatService;
+    private ConversationService conversationService;
     
     @Autowired
-    private DocumentProcessingService documentService;
+    private FileProcessingService fileProcessingService;
     
     @PostMapping("/message")
-    public ResponseEntity<ChatResponse> sendMessage(@RequestBody ChatMessage message) {
-        ChatResponse response = chatService.processMessage(message);
-        return ResponseEntity.ok(response);
+    public ResponseEntity<ChatResponse> sendMessage(@RequestBody ChatRequest request) {
+        try {
+            ChatResponse response = conversationService.processMessage(request);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(ChatResponse.error("Failed to process message"));
+        }
     }
     
     @PostMapping("/upload")
-    public ResponseEntity<DocumentAnalysis> uploadDocument(
+    public ResponseEntity<FileUploadResponse> uploadFile(
             @RequestParam("file") MultipartFile file,
-            @RequestParam("sessionId") String sessionId) {
+            @RequestParam("conversationId") String conversationId) {
         
         try {
-            DocumentAnalysis analysis = documentService.analyzeDocument(file, sessionId);
-            return ResponseEntity.ok(analysis);
-        } catch (UnsupportedDocumentException e) {
-            return ResponseEntity.badRequest()
-                .body(DocumentAnalysis.error("Unsupported document type"));
+            FileProcessingResult result = fileProcessingService.processFile(
+                file, conversationId);
+            
+            return ResponseEntity.ok(FileUploadResponse.builder()
+                .fileId(result.getFileId())
+                .extractedText(result.getExtractedText())
+                .processingStatus(result.getStatus())
+                .build());
+                
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(FileUploadResponse.error("File processing failed"));
         }
     }
+    
+    @GetMapping("/conversation/{id}")
+    public ResponseEntity<ConversationHistory> getConversationHistory(
+            @PathVariable String id) {
+        
+        ConversationHistory history = conversationService.getConversationHistory(id);
+        return ResponseEntity.ok(history);
+    }
 }
+```
+### ConversationService
 
+The ConversationService handles multi-modal customer interactions, supporting text, file uploads, images, and audio processing.
+
+```java
 @Service
-public class ChatService {
+@sl4j
+public class ConversationService {
     
     @Autowired
-    private ChatClient chatClient;
+    private KnowledgeBaseService knowledgeBaseService;
     
     @Autowired
-    private KnowledgeBaseService knowledgeBase;
+    private AIWorkflowEngineService aiWorkflowService;
     
     @Autowired
-    private LoanApplicationService loanService;
+    private ContextMemoryService contextMemoryService;
     
-    public ChatResponse processMessage(ChatMessage message) {
-        // Determine intent using AI
-        ChatIntent intent = determineIntent(message.getContent());
+    public ConversationResponse processMessage(ConversationRequest request) {
+        // Retrieve conversation context
+        ConversationContext context = contextMemoryService.getContext(
+            request.getSessionId());
+        
+        // Process multi-modal input
+        ProcessedInput processedInput = processMultiModalInput(request);
+        
+        // Classify intent using ReAct pattern
+        IntentClassification intent = classifyIntent(processedInput, context);
         
         switch (intent.getType()) {
             case LOAN_APPLICATION:
-                return handleLoanInquiry(message, intent);
-            case DOCUMENT_QUESTION:
-                return handleDocumentQuestion(message, intent);
-            case GENERAL_INQUIRY:
-                return handleGeneralInquiry(message, intent);
+                return handleLoanApplication(processedInput, context);
+            case KNOWLEDGE_QUERY:
+                return handleKnowledgeQuery(processedInput, context);
+            case DOCUMENT_UPLOAD:
+                return handleDocumentUpload(processedInput, context);
             default:
-                return ChatResponse.defaultResponse();
+                return handleGeneralChat(processedInput, context);
         }
     }
     
-    private ChatResponse handleLoanInquiry(ChatMessage message, ChatIntent intent) {
-        // Extract loan requirements from natural language
-        LoanRequirements requirements = extractLoanRequirements(message.getContent());
+    private ProcessedInput processMultiModalInput(ConversationRequest request) {
+        ProcessedInput.Builder builder = ProcessedInput.builder()
+            .sessionId(request.getSessionId())
+            .timestamp(Instant.now());
         
-        // Get preliminary assessment
-        PreliminaryAssessment assessment = 
-            loanService.getPreliminaryAssessment(requirements);
-        
-        return ChatResponse.builder()
-            .message(formatLoanResponse(assessment))
-            .suggestedActions(generateSuggestedActions(assessment))
-            .build();
-    }
-    
-    private LoanRequirements extractLoanRequirements(String userMessage) {
-        String prompt = String.format("""
-            Extract loan requirements from this user message: "%s"
-            
-            Extract and return JSON with:
-            {
-                "loanAmount": number or null,
-                "purpose": "string or null",
-                "timeframe": "string or null",
-                "hasCollateral": boolean or null,
-                "estimatedIncome": number or null
-            }
-            
-            Only include fields that can be clearly determined from the message.
-            """, userMessage);
-        
-        ChatResponse response = chatClient.call(new Prompt(prompt));
-        return parseRequirements(response.getResult().getOutput().getContent());
-    }
-}
-```
-
-### Real-time Document Processing
-
-```java
-@Service
-public class DocumentProcessingService {
-    
-    @Autowired
-    private ChatClient chatClient;
-    
-    @Autowired
-    private OCRService ocrService;
-    
-    public DocumentAnalysis analyzeDocument(MultipartFile file, String sessionId) {
-        // Extract text from document
-        String extractedText = extractTextFromDocument(file);
-        
-        // AI-powered document classification and analysis
-        DocumentClassification classification = classifyDocument(extractedText);
-        DocumentData extractedData = extractRelevantData(extractedText, classification);
-        
-        // Store in session context
-        storeInSession(sessionId, classification, extractedData);
-        
-        return DocumentAnalysis.builder()
-            .classification(classification)
-            .extractedData(extractedData)
-            .confidence(calculateConfidence(extractedText, extractedData))
-            .suggestedNextSteps(generateNextSteps(classification))
-            .build();
-    }
-    
-    private DocumentData extractRelevantData(String text, DocumentClassification classification) {
-        String prompt = String.format("""
-            Extract structured data from this %s document:
-            
-            %s
-            
-            Return JSON with fields relevant to %s:
-            %s
-            """, 
-            classification.getType(),
-            text,
-            classification.getType(),
-            getExtractionTemplate(classification.getType()));
-        
-        ChatResponse response = chatClient.call(
-            new Prompt(prompt,
-                OpenAiChatOptions.builder()
-                    .withModel("gpt-4")
-                    .withTemperature(0.1f)
-                    .build()));
-        
-        return parseDocumentData(response.getResult().getOutput().getContent());
-    }
-    
-    private String getExtractionTemplate(DocumentType type) {
-        return switch (type) {
-            case PAY_STUB -> """
-                {
-                    "grossPay": number,
-                    "netPay": number,
-                    "payPeriod": "string",
-                    "yearToDateGross": number,
-                    "employerName": "string",
-                    "payDate": "YYYY-MM-DD"
-                }
-                """;
-            case BANK_STATEMENT -> """
-                {
-                    "accountNumber": "string",
-                    "bankName": "string",
-                    "statementPeriod": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},
-                    "endingBalance": number,
-                    "averageBalance": number,
-                    "deposits": [{"date": "YYYY-MM-DD", "amount": number, "description": "string"}],
-                    "withdrawals": [{"date": "YYYY-MM-DD", "amount": number, "description": "string"}]
-                }
-                """;
-            case TAX_RETURN -> """
-                {
-                    "taxYear": number,
-                    "adjustedGrossIncome": number,
-                    "filingStatus": "string",
-                    "totalTax": number,
-                    "refundAmount": number
-                }
-                """;
-            default -> "{}";
-        };
-    }
-}
-```
-
-## KnowledgeBaseService - RAG Implementation
-
-### Vector Database Integration
-
-```java
-@Service
-public class KnowledgeBaseService {
-    
-    @Autowired
-    private VectorStore vectorStore;
-    
-    @Autowired
-    private ChatClient chatClient;
-    
-    @Autowired
-    private DocumentReader documentReader;
-    
-    public String answerQuestion(String question, String sessionContext) {
-        // Retrieve relevant documents using similarity search
-        List<Document> relevantDocs = vectorStore.similaritySearch(
-            SearchRequest.query(question)
-                .withTopK(5)
-                .withSimilarityThreshold(0.7));
-        
-        // Combine with session context
-        String contextualizedQuestion = enhanceQuestionWithContext(question, sessionContext);
-        
-        // Generate response using RAG
-        return generateRAGResponse(contextualizedQuestion, relevantDocs);
-    }
-    
-    private String generateRAGResponse(String question, List<Document> context) {
-        String contextText = context.stream()
-            .map(Document::getContent)
-            .collect(Collectors.joining("\n\n"));
-        
-        String prompt = String.format("""
-            You are a knowledgeable financial advisor specializing in lending and personal loans.
-            Answer the following question based on the provided context and your expertise.
-            
-            Context from knowledge base:
-            %s
-            
-            Question: %s
-            
-            Instructions:
-            1. Provide accurate, helpful information
-            2. If the context doesn't fully answer the question, use your general knowledge
-            3. Be specific about loan requirements, rates, and procedures
-            4. Include relevant disclaimers when appropriate
-            5. Suggest next steps when helpful
-            
-            Response:
-            """, contextText, question);
-        
-        ChatResponse response = chatClient.call(
-            new Prompt(prompt,
-                OpenAiChatOptions.builder()
-                    .withModel("gpt-4")
-                    .withTemperature(0.3f)
-                    .build()));
-        
-        return response.getResult().getOutput().getContent();
-    }
-    
-    @PostConstruct
-    public void initializeKnowledgeBase() {
-        // Load and vectorize financial documents
-        List<Resource> resources = loadFinancialDocuments();
-        
-        for (Resource resource : resources) {
-            List<Document> documents = documentReader.get(resource);
-            
-            // Add metadata for better retrieval
-            documents.forEach(doc -> {
-                doc.getMetadata().put("source", resource.getFilename());
-                doc.getMetadata().put("type", "financial_knowledge");
-                doc.getMetadata().put("indexed_date", Instant.now().toString());
-            });
-            
-            vectorStore.add(documents);
+        // Process text
+        if (request.getText() != null) {
+            builder.text(request.getText());
         }
         
-        log.info("Knowledge base initialized with {} documents", 
-                vectorStore.similaritySearch(SearchRequest.query("loan").withTopK(1000)).size());
-    }
-}
-```
-
-### Intelligent FAQ System
-
-```java
-@Component
-public class IntelligentFAQService {
-    
-    @Autowired
-    private KnowledgeBaseService knowledgeBase;
-    
-    @Autowired
-    private ChatClient chatClient;
-    
-    public FAQResponse handleFAQ(String userQuestion, CustomerProfile profile) {
-        // Classify question intent
-        QuestionClassification classification = classifyQuestion(userQuestion);
-        
-        // Get base answer from knowledge base
-        String baseAnswer = knowledgeBase.answerQuestion(userQuestion, 
-                                                        profile.getSessionContext());
-        
-        // Personalize response based on customer profile
-        String personalizedAnswer = personalizeResponse(baseAnswer, profile, classification);
-        
-        // Generate follow-up questions
-        List<String> followUps = generateFollowUpQuestions(classification, profile);
-        
-        return FAQResponse.builder()
-            .answer(personalizedAnswer)
-            .confidence(classification.getConfidence())
-            .followUpQuestions(followUps)
-            .relatedTopics(findRelatedTopics(classification))
-            .build();
-    }
-    
-    private String personalizeResponse(String baseAnswer, CustomerProfile profile, 
-                                     QuestionClassification classification) {
-        String prompt = String.format("""
-            Personalize this financial advice for the specific customer:
-            
-            Base Answer: %s
-            
-            Customer Profile:
-            - Credit Score Range: %s
-            - Income Level: %s
-            - Previous Loans: %s
-            - Current Debt: $%,.2f
-            
-            Question Category: %s
-            
-            Adjust the answer to be more relevant to this customer's situation.
-            Provide specific recommendations and mention relevant products or options.
-            Keep the same helpful tone but make it more targeted.
-            """, 
-            baseAnswer,
-            profile.getCreditScoreRange(),
-            profile.getIncomeLevel(),
-            profile.getPreviousLoans(),
-            profile.getCurrentDebt(),
-            classification.getCategory());
-        
-        ChatResponse response = chatClient.call(new Prompt(prompt));
-        return response.getResult().getOutput().getContent();
-    }
-}
-```
-
-## Production-Ready Implementation Considerations
-
-### Monitoring and Observability
-
-```java
-@Component
-public class LendingSystemMetrics {
-    
-    private final MeterRegistry meterRegistry;
-    private final Counter loanApplications;
-    private final Timer processsingTime;
-    private final Gauge aiModelConfidence;
-    
-    public LendingSystemMetrics(MeterRegistry meterRegistry) {
-        this.meterRegistry = meterRegistry;
-        this.loanApplications = Counter.builder("loan.applications.total")
-            .description("Total loan applications processed")
-            .register(meterRegistry);
-        this.processsingTime = Timer.builder("loan.processing.time")
-            .description("Time taken to process loan applications")
-            .register(meterRegistry);
-        this.aiModelConfidence = Gauge.builder("ai.model.confidence")
-            .description("Average AI model confidence score")
-            .register(meterRegistry);
-    }
-    
-    public void recordLoanApplication(String status) {
-        loanApplications.increment(Tags.of("status", status));
-    }
-    
-    public void recordProcessingTime(Duration duration) {
-        processsingTime.record(duration);
-    }
-}
-
-@Aspect
-@Component
-public class LendingAuditAspect {
-    
-    @Autowired
-    private AuditService auditService;
-    
-    @Around("@annotation(Auditable)")
-    public Object auditLendingOperation(ProceedingJoinPoint joinPoint) throws Throwable {
-        String operation = joinPoint.getSignature().getName();
-        Object[] args = joinPoint.getArgs();
-        
-        AuditEntry entry = AuditEntry.builder()
-            .operation(operation)
-            .timestamp(Instant.now())
-            .userId(getCurrentUserId())
-            .parameters(args)
-            .build();
-        
-        try {
-            Object result = joinPoint.proceed();
-            entry.setStatus("SUCCESS");
-            entry.setResult(result);
-            return result;
-        } catch (Exception e) {
-            entry.setStatus("ERROR");
-            entry.setError(e.getMessage());
-            throw e;
-        } finally {
-            auditService.logAudit(entry);
-        }
-    }
-}
-```
-
-### Security Implementation
-
-```java
-@Configuration
-@EnableWebSecurity
-public class LendingSecurityConfig {
-    
-    @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        return http
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/public/**").permitAll()
-                .requestMatchers("/api/loan/**").hasRole("CUSTOMER")
-                .requestMatchers("/api/admin/**").hasRole("LOAN_OFFICER")
-                .anyRequest().authenticated())
-            .oauth2ResourceServer(oauth2 -> oauth2
-                .jwt(jwt -> jwt.jwtDecoder(jwtDecoder())))
-            .sessionManagement(session -> session
-                .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .csrf(csrf -> csrf.disable())
-            .headers(headers -> headers
-                .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
-                .contentTypeOptions(Customizer.withDefaults())
-                .httpStrictTransportSecurity(hstsConfig -> hstsConfig
-                    .maxAgeInSeconds(31536000)
-                    .includeSubDomains(true)))
-            .build();
-    }
-    
-    @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder(12);
-    }
-}
-
-@Service
-public class DataEncryptionService {
-    
-    private final AESUtil aesUtil;
-    
-    public String encryptPII(String data) {
-        return aesUtil.encrypt(data);
-    }
-    
-    public String decryptPII(String encryptedData) {
-        return aesUtil.decrypt(encryptedData);
-    }
-    
-    @EventListener
-    public void handleSensitiveDataAccess(SensitiveDataAccessEvent event) {
-        // Log all access to sensitive data for compliance
-        log.info("Sensitive data accessed: user={}, operation={}, timestamp={}", 
-                event.getUserId(), event.getOperation(), event.getTimestamp());
-    }
-}
-```
-
-## Advanced Use Cases and Examples
-
-### Use Case 1: Automated Income Verification
-
-```java
-@Service
-public class IncomeVerificationService {
-    
-    @Autowired
-    private AIWorkflowEngineService aiEngine;
-    
-    @Autowired
-    private ExternalServiceClient externalClient;
-    
-    public IncomeVerificationResult verifyIncome(String customerId, 
-                                               List<Document> payStubs,
-                                               List<Document> bankStatements) {
-        
-        // AI-powered document analysis
-        IncomeAnalysis payStubAnalysis = analyzePayStubs(payStubs);
-        BankAnalysis bankAnalysis = analyzeBankStatements(bankStatements);
-        
-        // Cross-reference with external data
-        EmploymentVerification employment = 
-            externalClient.verifyEmployment(customerId);
-        
-        // AI consistency check
-        ConsistencyCheck consistency = performConsistencyCheck(
-            payStubAnalysis, bankAnalysis, employment);
-        
-        return IncomeVerificationResult.builder()
-            .verified(consistency.isConsistent())
-            .verifiedIncome(consistency.getVerifiedIncome())
-            .confidenceScore(consistency.getConfidenceScore())
-            .discrepancies(consistency.getDiscrepancies())
-            .build();
-    }
-    
-    private ConsistencyCheck performConsistencyCheck(
-            IncomeAnalysis payStubs, BankAnalysis bank, EmploymentVerification employment) {
-        
-        String prompt = String.format("""
-            As a financial analyst, verify income consistency across these sources:
-            
-            Pay Stub Analysis:
-            - Reported monthly income: $%,.2f
-            - Employer: %s
-            - Employment duration: %s
-            
-            Bank Statement Analysis:
-            - Average monthly deposits: $%,.2f
-            - Deposit pattern consistency: %s
-            - Deposit sources: %s
-            
-            Employment Verification:
-            - Verified employer: %s
-            - Verified income: $%,.2f
-            - Employment status: %s
-            
-            Analyze for:
-            1. Income consistency across sources
-            2. Red flags or discrepancies
-            3. Overall confidence in reported income
-            
-            Provide analysis as JSON:
-            {
-                "consistent": boolean,
-                "verifiedMonthlyIncome": number,
-                "confidenceScore": number (0-100),
-                "discrepancies": ["array of issues found"],
-                "recommendations": ["array of recommendations"]
-            }
-            """,
-            payStubs.getMonthlyIncome(),
-            payStubs.getEmployer(),
-            payStubs.getEmploymentDuration(),
-            bank.getAverageMonthlyDeposits(),
-            bank.getDepositConsistency(),
-            bank.getDepositSources(),
-            employment.getEmployer(),
-            employment.getVerifiedIncome(),
-            employment.getStatus());
-        
-        ChatResponse response = aiEngine.getChatClient().call(new Prompt(prompt));
-        return parseConsistencyCheck(response.getResult().getOutput().getContent());
-    }
-}
-```
-
-### Use Case 2: Intelligent Risk Assessment
-
-{% mermaid flowchart TD %}
-    A[Loan Application] --> B[Traditional Risk Scoring]
-    A --> C[AI Document Analysis]
-    A --> D[External Data Gathering]
-    
-    B --> E[Credit Score Calculation]
-    C --> F[Document Insights]
-    D --> G[Employment Verification]
-    D --> H[Bank Account Analysis]
-    
-    E --> I[Risk Fusion Engine]
-    F --> I
-    G --> I
-    H --> I
-    
-    I --> J{AI Confidence > 0.8?}
-    J -->|Yes| K[Automated Decision]
-    J -->|No| L[Human Review Queue]
-    
-    K --> M[Approval/Rejection]
-    L --> N[Loan Officer Review]
-    N --> M
-{% endmermaid %}
-
-### Use Case 3: Conversational Loan Application
-
-**Example Conversation Flow**:
-
-```
-User: "Hi, I need a loan to buy a car"
-
-AI: "I'd be happy to help you with a car loan! To get started, I'll need some information:
-     • What's the estimated cost of the car you're looking to purchase?
-     • Do you have a specific car in mind, or are you still shopping?
-     • What's your current monthly income?
-     
-     Also, please feel free to upload any recent pay stubs or bank statements to speed up the process."
-
-User: [Uploads pay stub] "The car costs about $25,000, and here's my latest pay stub"
-
-AI: "Thanks for uploading your pay stub! I can see you earn $4,200 monthly gross income working at TechCorp. 
-     For a $25,000 car loan, you're looking at roughly $450-500 monthly payments over 5 years.
-     
-     A few more questions:
-     • How much are you planning to put down?
-     • Do you have any existing auto loans or major debts?
-     • Would you like me to check what interest rates you might qualify for?"
-
-User: "I can put down $5,000, and I have about $800 in credit card debt"
-
-AI: "Perfect! With a $5,000 down payment, you'd need to finance $20,000. Your debt-to-income ratio looks good.
-     
-     Based on your income and the information provided, you may qualify for rates between 4.5-6.2% APR.
-     
-     Would you like me to:
-     1. Start a formal pre-approval application
-     2. Show you payment scenarios at different rates
-     3. Explain what documents you'll need for final approval"
-```
-
-**Implementation of this conversation**:
-
-```java
-@Service
-public class ConversationalLoanService {
-    
-    @Autowired
-    private ChatClient chatClient;
-    
-    @Autowired
-    private LoanCalculatorService calculatorService;
-    
-    public ChatResponse handleLoanConversation(String userMessage, ConversationContext context) {
-        
-        // Extract entities and intent from user message
-        ConversationAnalysis analysis = analyzeMessage(userMessage, context);
-        
-        // Update conversation state
-        updateConversationState(context, analysis);
-        
-        // Generate appropriate response
-        return generateContextualResponse(context, analysis);
-    }
-    
-    private ConversationAnalysis analyzeMessage(String message, ConversationContext context) {
-        String prompt = String.format("""
-            Analyze this user message in the context of a loan application conversation:
-            
-            User Message: "%s"
-            
-            Conversation History: %s
-            
-            Extract and return JSON:
-            {
-                "intent": "information_request|document_upload|application_start|clarification",
-                "extracted_entities": {
-                    "loan_amount": number or null,
-                    "down_payment": number or null,
-                    "monthly_income": number or null,
-                    "existing_debt": number or null,
-                    "loan_purpose": "string or null"
-                },
-                "user_sentiment": "positive|neutral|concerned|frustrated",
-                "confidence_level": number (0-1),
-                "next_best_action": "string describing what to do next"
-            }
-            """, message, context.getHistorySummary());
-        
-        ChatResponse response = chatClient.call(new Prompt(prompt));
-        return parseConversationAnalysis(response.getResult().getOutput().getContent());
-    }
-    
-    private ChatResponse generateContextualResponse(ConversationContext context, 
-                                                  ConversationAnalysis analysis) {
-        
-        // Calculate loan scenarios if we have enough information
-        List<LoanScenario> scenarios = new ArrayList<>();
-        if (context.hasBasicLoanInfo()) {
-            scenarios = calculatorService.calculateScenarios(
-                context.getLoanAmount(),
-                context.getDownPayment(),
-                context.getEstimatedCreditScore());
+        // Process files
+        if (request.getFiles() != null) {
+            List<ProcessedFile> processedFiles = request.getFiles().stream()
+                .map(this::processFile)
+                .collect(Collectors.toList());
+            builder.files(processedFiles);
         }
         
-        String prompt = String.format("""
-            You are a helpful loan specialist having a conversation with a customer.
-            
-            Conversation Context:
-            - Current stage: %s
-            - Information collected: %s
-            - Last user message analysis: %s
-            
-            Available loan scenarios: %s
-            
-            Generate a helpful, conversational response that:
-            1. Acknowledges what the user shared
-            2. Provides relevant information or calculations
-            3. Asks for the next piece of needed information
-            4. Maintains a friendly, professional tone
-            5. Offers specific next steps
-            
-            Keep responses concise but informative. Use bullet points for clarity when listing options.
-            """,
-            context.getCurrentStage(),
-            context.getCollectedInfo(),
-            analysis.toString(),
-            formatScenarios(scenarios));
-        
-        ChatResponse response = chatClient.call(
-            new Prompt(prompt,
-                OpenAiChatOptions.builder()
-                    .withTemperature(0.7f)
-                    .build()));
-        
-        return ChatResponse.builder()
-            .message(response.getResult().getOutput().getContent())
-            .suggestedActions(generateSuggestedActions(context, analysis))
-            .loanScenarios(scenarios)
-            .build();
-    }
-}
-```
-
-## Performance Optimization Strategies
-
-### Caching Implementation
-
-```java
-@Configuration
-@EnableCaching
-public class CacheConfig {
-    
-    @Bean
-    public CacheManager cacheManager() {
-        RedisCacheManager.Builder builder = RedisCacheManager
-            .RedisCacheManagerBuilder
-            .fromConnectionFactory(redisConnectionFactory())
-            .cacheDefaults(cacheConfiguration());
+        // Process images
+        if (request.getImages() != null) {
+            List<ProcessedImage> processedImages = request.getImages().stream()
+                .map(this::processImage)
+                .collect(Collectors.toList());
+            builder.images(processedImages);
+        }
         
         return builder.build();
     }
-    
-    private RedisCacheConfiguration cacheConfiguration() {
-        return RedisCacheConfiguration.defaultCacheConfig()
-            .entryTtl(Duration.ofHours(1))
-            .serializeKeysWith(RedisSerializationContext.SerializationPair
-                .fromSerializer(new StringRedisSerializer()))
-            .serializeValuesWith(RedisSerializationContext.SerializationPair
-                .fromSerializer(new GenericJackson2JsonRedisSerializer()));
-    }
 }
+```
 
+### KnowledgeBaseService
+
+The KnowledgeBaseService implements a comprehensive RAG system for financial domain knowledge, supporting various document formats and providing contextually relevant responses.
+
+```java
 @Service
-public class CachedExternalService {
+@sl4j
+public class KnowledgeBaseService {
     
-    @Cacheable(value = "creditReports", key = "#ssn")
-    public CreditReport getCreditReport(String ssn) {
-        // Expensive external API call
-        return externalCreditService.fetchReport(ssn);
+    @Autowired
+    private VectorStoreService vectorStoreService;
+    
+    @Autowired
+    private DocumentParsingService documentParsingService;
+    
+    @Autowired
+    private EmbeddingModel embeddingModel;
+    
+    @Autowired
+    private ChatModel chatModel;
+    
+    public KnowledgeResponse queryKnowledge(String query, ConversationContext context) {
+        // Generate embedding for the query
+        EmbeddingRequest embeddingRequest = new EmbeddingRequest(
+            List.of(query), EmbeddingOptions.EMPTY);
+        EmbeddingResponse embeddingResponse = embeddingModel.call(embeddingRequest);
+        
+        // Retrieve relevant documents
+        List<Document> relevantDocs = vectorStoreService.similaritySearch(
+            SearchRequest.query(query)
+                .withTopK(5)
+                .withSimilarityThreshold(0.7));
+        
+        // Generate contextual response
+        return generateContextualResponse(query, relevantDocs, context);
     }
     
-    @Cacheable(value = "aiRiskAssessments", key = "#application.hashCode()")
-    public AIRiskAssessment getAIRiskAssessment(LoanApplication application) {
-        // Expensive AI model inference
-        return aiService.assessRisk(application);
+    public void indexDocument(MultipartFile file) {
+        try {
+            // Parse document based on format
+            ParsedDocument parsedDoc = documentParsingService.parse(file);
+            
+            // Split into chunks
+            List<DocumentChunk> chunks = splitDocument(parsedDoc);
+            
+            // Generate embeddings and store
+            for (DocumentChunk chunk : chunks) {
+                EmbeddingRequest embeddingRequest = new EmbeddingRequest(
+                    List.of(chunk.getContent()), EmbeddingOptions.EMPTY);
+                EmbeddingResponse embeddingResponse = embeddingModel.call(embeddingRequest);
+                
+                Document document = new Document(chunk.getContent(), 
+                    Map.of("source", file.getOriginalFilename(),
+                           "chunk_id", chunk.getId()));
+                document.setEmbedding(embeddingResponse.getResults().get(0).getOutput());
+                
+                vectorStoreService.add(List.of(document));
+            }
+        } catch (Exception e) {
+            log.error("Failed to index document: {}", file.getOriginalFilename(), e);
+            throw new DocumentIndexingException("Failed to index document", e);
+        }
     }
     
-    @CacheEvict(value = "creditReports", key = "#ssn")
-    public void invalidateCreditReport(String ssn) {
-        // Called when we know credit data has changed
+    private List<DocumentChunk> splitDocument(ParsedDocument parsedDoc) {
+        // Implement intelligent chunking based on document structure
+        return DocumentChunker.builder()
+            .chunkSize(1000)
+            .chunkOverlap(200)
+            .respectSentenceBoundaries(true)
+            .respectParagraphBoundaries(true)
+            .build()
+            .split(parsedDoc);
     }
 }
 ```
 
-### Asynchronous Processing
+## Key Technologies
+### LLM fine-tuning with Financial data
+
+Fine-tuning Large Language Models with domain-specific financial data enhances their understanding of financial concepts, regulations, and terminology.
+
+**Fine-tuning Strategy:**
+- **Base Model Selection**: Choose appropriate foundation models (GPT-4, Claude, or Llama)
+- **Dataset Preparation**: Curate high-quality financial datasets
+- **Training Pipeline**: Implement efficient fine-tuning workflows
+- **Evaluation Metrics**: Define domain-specific evaluation criteria
+- **Continuous Learning**: Update models with new financial data
+
+**Implementation Example:**
 
 ```java
-@Service
-public class AsyncLoanProcessingService {
+@Component
+public class FinancialLLMFineTuner {
     
     @Autowired
-    private ApplicationEventPublisher eventPublisher;
+    private ModelTrainingService trainingService;
     
-    @Async("loanProcessingExecutor")
-    public CompletableFuture<LoanApplicationResult> processLoanAsync(LoanApplication application) {
-        
+    @Autowired
+    private DatasetManager datasetManager;
+    
+    @Autowired
+    private ModelEvaluationService evaluationService;
+    
+    @Scheduled(cron = "0 0 2 * * SUN") // Weekly training
+    public void scheduledFineTuning() {
         try {
-            // Publish event for tracking
-            eventPublisher.publishEvent(new LoanProcessingStartedEvent(application.getId()));
+            // Prepare training dataset
+            FinancialDataset dataset = datasetManager.prepareFinancialDataset();
             
-            // Process in stages with progress updates
-            InitialReviewResult initial = performInitialReview(application);
-            eventPublisher.publishEvent(new LoanProcessingProgressEvent(
-                application.getId(), "Initial review complete", 33));
-            
-            if (!initial.isApproved()) {
-                return CompletableFuture.completedFuture(
-                    LoanApplicationResult.rejected(initial.getReason()));
-            }
-            
-            DetailedReviewResult detailed = performDetailedReview(application);
-            eventPublisher.publishEvent(new LoanProcessingProgressEvent(
-                application.getId(), "Detailed review complete", 66));
-            
-            if (!detailed.isApproved()) {
-                return CompletableFuture.completedFuture(
-                    LoanApplicationResult.rejected(detailed.getReason()));
-            }
-            
-            FinalReviewResult finalResult = performFinalReview(application);
-            eventPublisher.publishEvent(new LoanProcessingProgressEvent(
-                application.getId(), "Final review complete", 100));
-            
-            LoanApplicationResult result = LoanApplicationResult.builder()
-                .approved(finalResult.isApproved())
-                .loanAmount(finalResult.getApprovedAmount())
-                .interestRate(finalResult.getInterestRate())
+            // Configure training parameters
+            TrainingConfig config = TrainingConfig.builder()
+                .baseModel("gpt-4")
+                .learningRate(0.0001)
+                .batchSize(16)
+                .epochs(3)
+                .warmupSteps(100)
+                .evaluationStrategy(EvaluationStrategy.STEPS)
+                .evaluationSteps(500)
                 .build();
             
-            eventPublisher.publishEvent(new LoanProcessingCompletedEvent(
-                application.getId(), result));
+            // Start fine-tuning
+            TrainingResult result = trainingService.fineTuneModel(config, dataset);
             
-            return CompletableFuture.completedFuture(result);
+            // Evaluate model performance
+            EvaluationResult evaluation = evaluationService.evaluate(
+                result.getModelId(), dataset.getTestSet());
             
-        } catch (Exception e) {
-            eventPublisher.publishEvent(new LoanProcessingFailedEvent(
-                application.getId(), e.getMessage()));
-            throw new LoanProcessingException("Failed to process loan application", e);
-        }
-    }
-    
-    @Bean(name = "loanProcessingExecutor")
-    public TaskExecutor loanProcessingExecutor() {
-        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(5);
-        executor.setMaxPoolSize(20);
-        executor.setQueueCapacity(100);
-        executor.setThreadNamePrefix("loan-processor-");
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
-        executor.initialize();
-        return executor;
-    }
-}
-```
-
-## Testing Strategies
-
-### AI Component Testing
-
-```java
-@ExtendWith(MockitoExtension.class)
-class AIWorkflowEngineServiceTest {
-    
-    @Mock
-    private ChatClient chatClient;
-    
-    @Mock
-    private VectorStore vectorStore;
-    
-    @InjectMocks
-    private AIWorkflowEngineService aiService;
-    
-    @Test
-    void shouldGenerateAccurateRiskAssessment() {
-        // Given
-        LoanApplication application = createTestApplication();
-        List<Document> documents = createTestDocuments();
-        
-        ChatResponse mockResponse = new ChatResponse(new Generation(
-            "{\"riskScore\": 750, \"reasoning\": \"Good credit history\", \"recommendation\": \"APPROVE\"}"));
-        
-        when(chatClient.call(any(Prompt.class))).thenReturn(mockResponse);
-        
-        // When
-        AIRiskAssessment result = aiService.generateAIRiskAssessment(application, documents);
-        
-        // Then
-        assertThat(result.getRiskScore()).isEqualTo(750);
-        assertThat(result.getRecommendation()).isEqualTo("APPROVE");
-        
-        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-        verify(chatClient).call(promptCaptor.capture());
-        
-        String capturedPrompt = promptCaptor.getValue().getInstructions().get(0).getText();
-        assertThat(capturedPrompt).contains("risk assessment");
-        assertThat(capturedPrompt).contains(application.getApplicantName());
-    }
-    
-    @Test
-    void shouldHandleAIServiceFailureGracefully() {
-        // Given
-        LoanApplication application = createTestApplication();
-        when(chatClient.call(any(Prompt.class))).thenThrow(new RuntimeException("AI service down"));
-        
-        // When & Then
-        assertThatThrownBy(() -> aiService.generateAIRiskAssessment(application, List.of()))
-            .isInstanceOf(AIServiceException.class)
-            .hasMessageContaining("AI risk assessment failed");
-    }
-}
-
-@TestConfiguration
-public class TestAIConfig {
-    
-    @Bean
-    @Primary
-    public ChatClient testChatClient() {
-        return new MockChatClient();
-    }
-    
-    public static class MockChatClient implements ChatClient {
-        
-        @Override
-        public ChatResponse call(Prompt prompt) {
-            // Return deterministic responses for testing
-            String promptText = prompt.getInstructions().get(0).getText();
-            
-            if (promptText.contains("risk assessment")) {
-                return new ChatResponse(new Generation(
-                    "{\"riskScore\": 700, \"reasoning\": \"Test assessment\", \"recommendation\": \"APPROVE\"}"));
+            // Deploy if performance meets criteria
+            if (evaluation.getFinancialAccuracy() > 0.95) {
+                deployModel(result.getModelId());
             }
             
-            return new ChatResponse(new Generation("Default test response"));
+        } catch (Exception e) {
+            log.error("Fine-tuning failed", e);
+        }
+    }
+    
+    private void deployModel(String modelId) {
+        // Implement model deployment logic
+        // Include A/B testing for gradual rollout
+    }
+}
+```
+### Multi-Modal Message Processing
+
+The system processes diverse input types, including text, images, audio, and documents. Each modality is handled by specialized processors that extract relevant information and convert it into a unified format.
+#### MultiModalProcessor
+```java
+@Component
+public class MultiModalProcessor {
+    
+    @Autowired
+    private AudioTranscriptionService audioTranscriptionService;
+    
+    @Autowired
+    private ImageAnalysisService imageAnalysisService;
+    
+    @Autowired
+    private DocumentExtractionService documentExtractionService;
+    
+    public ProcessedInput processInput(MultiModalInput input) {
+        ProcessedInput.Builder builder = ProcessedInput.builder();
+        
+        // Process audio to text
+        if (input.hasAudio()) {
+            String transcription = audioTranscriptionService.transcribe(input.getAudio());
+            builder.transcription(transcription);
+        }
+        
+        // Process images
+        if (input.hasImages()) {
+            List<ImageAnalysisResult> imageResults = input.getImages().stream()
+                .map(imageAnalysisService::analyzeImage)
+                .collect(Collectors.toList());
+            builder.imageAnalysis(imageResults);
+        }
+        
+        // Process documents
+        if (input.hasDocuments()) {
+            List<ExtractedContent> documentContents = input.getDocuments().stream()
+                .map(documentExtractionService::extractContent)
+                .collect(Collectors.toList());
+            builder.documentContents(documentContents);
+        }
+        
+        return builder.build();
+    }
+}
+```
+#### Multi-Format Document Processing
+
+```java
+@Component
+public class DocumentProcessor {
+    
+    @Autowired
+    private PdfProcessor pdfProcessor;
+    
+    @Autowired
+    private ExcelProcessor excelProcessor;
+    
+    @Autowired
+    private WordProcessor wordProcessor;
+    
+    @Autowired
+    private TextSplitter textSplitter;
+    
+    public List<Document> processDocument(MultipartFile file) throws IOException {
+        String filename = file.getOriginalFilename();
+        String contentType = file.getContentType();
+        
+        String content = switch (contentType) {
+            case "application/pdf" -> pdfProcessor.extractText(file);
+            case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" -> 
+                excelProcessor.extractText(file);
+            case "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> 
+                wordProcessor.extractText(file);
+            case "text/plain" -> new String(file.getBytes(), StandardCharsets.UTF_8);
+            default -> throw new UnsupportedFileTypeException("Unsupported file type: " + contentType);
+        };
+        
+        // Split content into chunks
+        List<String> chunks = textSplitter.splitText(content);
+        
+        // Create documents
+        return chunks.stream()
+            .map(chunk -> Document.builder()
+                .content(chunk)
+                .metadata(Map.of(
+                    "filename", filename,
+                    "content_type", contentType,
+                    "chunk_size", String.valueOf(chunk.length())
+                ))
+                .build())
+            .collect(Collectors.toList());
+    }
+}
+```
+**Key Interview Question**: *"How do you handle different file formats and ensure consistent processing across modalities?"*
+
+**Reference Answer**: The system uses a plugin-based architecture where each file type has a dedicated processor. Common formats like PDF, DOCX, and images are handled by specialized libraries (Apache PDFBox, Apache POI, etc.). For audio, we use speech-to-text services. All processors output to a common `ProcessedInput` format, ensuring consistency downstream. The system is extensible - new processors can be added without modifying core logic.
+
+### RAG Implementation for Knowledge Base
+
+The RAG system combines vector search with contextual generation to provide accurate, relevant responses about financial topics.
+#### RAGService
+```java
+@Service
+public class RAGService {
+    
+    @Autowired
+    private VectorStoreService vectorStore;
+    
+    @Autowired
+    private ChatModel chatModel;
+    
+    @Autowired
+    private PromptTemplateService promptTemplateService;
+    
+    public RAGResponse generateResponse(String query, ConversationContext context) {
+        // Step 1: Retrieve relevant documents
+        List<Document> relevantDocs = retrieveRelevantDocuments(query);
+        
+        // Step 2: Rank and filter documents
+        List<Document> rankedDocs = rankDocuments(relevantDocs, query, context);
+        
+        // Step 3: Generate response with context
+        return generateWithContext(query, rankedDocs, context);
+    }
+    
+    private List<Document> rankDocuments(List<Document> documents, 
+                                       String query, 
+                                       ConversationContext context) {
+        // Implement re-ranking based on:
+        // - Semantic similarity
+        // - Recency of information
+        // - User's conversation history
+        // - Domain-specific relevance
+        
+        return documents.stream()
+            .sorted((doc1, doc2) -> {
+                double score1 = calculateRelevanceScore(doc1, query, context);
+                double score2 = calculateRelevanceScore(doc2, query, context);
+                return Double.compare(score2, score1);
+            })
+            .limit(3)
+            .collect(Collectors.toList());
+    }
+    
+    private double calculateRelevanceScore(Document doc, String query, ConversationContext context) {
+        double semanticScore = calculateSemanticSimilarity(doc, query);
+        double contextScore = calculateContextualRelevance(doc, context);
+        double freshnessScore = calculateFreshnessScore(doc);
+        
+        return 0.5 * semanticScore + 0.3 * contextScore + 0.2 * freshnessScore;
+    }
+}
+```
+
+#### Multi-Vector RAG for Financial Documents
+
+```java
+@Service
+public class AdvancedRAGService {
+    
+    @Autowired
+    private VectorStore semanticVectorStore;
+    
+    @Autowired
+    private VectorStore keywordVectorStore;
+    
+    @Autowired
+    private GraphRAGService graphRAGService;
+    
+    public RAGResponse queryWithMultiVectorRAG(String query, ConversationContext context) {
+        // Semantic search
+        List<Document> semanticResults = semanticVectorStore.similaritySearch(
+            SearchRequest.query(query).withTopK(5)
+        );
+        
+        // Keyword search
+        List<Document> keywordResults = keywordVectorStore.similaritySearch(
+            SearchRequest.query(extractKeywords(query)).withTopK(5)
+        );
+        
+        // Graph-based retrieval for relationship context
+        List<Document> graphResults = graphRAGService.retrieveRelatedDocuments(query);
+        
+        // Combine and re-rank results
+        List<Document> combinedResults = reRankDocuments(
+            Arrays.asList(semanticResults, keywordResults, graphResults), 
+            query
+        );
+        
+        // Generate response with multi-vector context
+        return generateEnhancedResponse(query, combinedResults, context);
+    }
+    
+    private List<Document> reRankDocuments(List<List<Document>> documentLists, String query) {
+        // Implement reciprocal rank fusion (RRF)
+        Map<String, Double> documentScores = new HashMap<>();
+        
+        for (List<Document> documents : documentLists) {
+            for (int i = 0; i < documents.size(); i++) {
+                Document doc = documents.get(i);
+                String docId = doc.getId();
+                double score = 1.0 / (i + 1); // Reciprocal rank
+                documentScores.merge(docId, score, Double::sum);
+            }
+        }
+        
+        // Sort by combined score and return top results
+        return documentScores.entrySet().stream()
+            .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+            .limit(10)
+            .map(entry -> findDocumentById(entry.getKey()))
+            .filter(Objects::nonNull)
+            .collect(Collectors.toList());
+    }
+}
+```
+
+#### Financial Domain-Specific Text Splitter
+
+```java
+@Component
+public class FinancialTextSplitter {
+    
+    private static final Pattern FINANCIAL_SECTION_PATTERN = 
+        Pattern.compile("(INCOME|EXPENSES|ASSETS|LIABILITIES|CASH FLOW|CREDIT HISTORY)", 
+                       Pattern.CASE_INSENSITIVE);
+    
+    private static final Pattern CURRENCY_PATTERN = 
+        Pattern.compile("\\$[0-9,]+\\.?[0-9]*|[0-9,]+\\.[0-9]{2}");
+    
+    public List<String> splitFinancialDocument(String text) {
+        List<String> chunks = new ArrayList<>();
+        
+        // Split by financial sections first
+        String[] sections = FINANCIAL_SECTION_PATTERN.split(text);
+        
+        for (String section : sections) {
+            if (section.length() > 2000) {
+                // Further split large sections while preserving financial context
+                chunks.addAll(splitLargeSection(section));
+            } else {
+                chunks.add(section.trim());
+            }
+        }
+        
+        return chunks.stream()
+            .filter(chunk -> !chunk.isEmpty())
+            .collect(Collectors.toList());
+    }
+    
+    private List<String> splitLargeSection(String section) {
+        List<String> chunks = new ArrayList<>();
+        String[] sentences = section.split("\\.");
+        
+        StringBuilder currentChunk = new StringBuilder();
+        
+        for (String sentence : sentences) {
+            if (currentChunk.length() + sentence.length() > 1500) {
+                if (currentChunk.length() > 0) {
+                    chunks.add(currentChunk.toString().trim());
+                    currentChunk = new StringBuilder();
+                }
+            }
+            
+            currentChunk.append(sentence).append(".");
+            
+            // Preserve financial context by keeping currency amounts together
+            if (CURRENCY_PATTERN.matcher(sentence).find()) {
+                // Don't split immediately after financial amounts
+                continue;
+            }
+        }
+        
+        if (currentChunk.length() > 0) {
+            chunks.add(currentChunk.toString().trim());
+        }
+        
+        return chunks;
+    }
+}
+```
+
+### MCP Server and Agent-to-Agent Communication
+
+The Model Context Protocol (MCP) enables seamless communication between specialized agents, each handling specific domain expertise.
+#### MCPServerManager
+```java
+@Component
+public class MCPServerManager {
+    
+    private final Map<String, MCPAgent> agents = new ConcurrentHashMap<>();
+    
+    @PostConstruct
+    public void initializeAgents() {
+        // Initialize specialized agents
+        agents.put("credit_agent", new CreditAnalysisAgent());
+        agents.put("risk_agent", new RiskAssessmentAgent());
+        agents.put("compliance_agent", new ComplianceAgent());
+        agents.put("document_agent", new DocumentAnalysisAgent());
+    }
+    
+    public AgentResponse routeToAgent(String agentType, AgentRequest request) {
+        MCPAgent agent = agents.get(agentType);
+        if (agent == null) {
+            throw new AgentNotFoundException("Agent not found: " + agentType);
+        }
+        
+        return agent.process(request);
+    }
+    
+    public CompoundResponse processWithMultipleAgents(List<String> agentTypes, 
+                                                     AgentRequest request) {
+        CompoundResponse.Builder responseBuilder = CompoundResponse.builder();
+        
+        // Process with multiple agents in parallel
+        List<CompletableFuture<AgentResponse>> futures = agentTypes.stream()
+            .map(agentType -> CompletableFuture.supplyAsync(() -> 
+                routeToAgent(agentType, request)))
+            .collect(Collectors.toList());
+        
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+            .join();
+        
+        // Combine responses
+        List<AgentResponse> responses = futures.stream()
+            .map(CompletableFuture::join)
+            .collect(Collectors.toList());
+        
+        return responseBuilder.agentResponses(responses).build();
+    }
+}
+```
+#### Credit Analysis Agent Example
+
+```java
+@Component
+public class CreditAnalysisAgent {
+    
+    @MCPMethod("analyze_credit_profile")
+    public CreditAnalysisResult analyzeCreditProfile(CreditAnalysisRequest request) {
+        // Specialized credit analysis logic
+        CreditProfile profile = request.getCreditProfile();
+        
+        // Calculate various credit metrics
+        double debtToIncomeRatio = calculateDebtToIncomeRatio(profile);
+        double creditUtilization = calculateCreditUtilization(profile);
+        int paymentHistory = analyzePaymentHistory(profile);
+        
+        // Generate risk score
+        double riskScore = calculateCreditRiskScore(debtToIncomeRatio, creditUtilization, paymentHistory);
+        
+        // Provide recommendations
+        List<String> recommendations = generateCreditRecommendations(profile, riskScore);
+        
+        return CreditAnalysisResult.builder()
+            .riskScore(riskScore)
+            .debtToIncomeRatio(debtToIncomeRatio)
+            .creditUtilization(creditUtilization)
+            .paymentHistoryScore(paymentHistory)
+            .recommendations(recommendations)
+            .analysisTimestamp(Instant.now())
+            .build();
+    }
+    
+    private double calculateCreditRiskScore(double dtiRatio, double utilization, int paymentHistory) {
+        // Weighted scoring algorithm
+        double dtiWeight = 0.35;
+        double utilizationWeight = 0.30;
+        double paymentHistoryWeight = 0.35;
+        
+        double dtiScore = Math.max(0, 100 - (dtiRatio * 2)); // Lower DTI = higher score
+        double utilizationScore = Math.max(0, 100 - (utilization * 100)); // Lower utilization = higher score
+        double paymentScore = paymentHistory; // Already normalized to 0-100
+        
+        return (dtiScore * dtiWeight) + (utilizationScore * utilizationWeight) + (paymentScore * paymentHistoryWeight);
+    }
+}
+```
+### Session Memory and Context Caching with mem0
+
+The mem0 solution provides sophisticated context management, maintaining conversation state and user preferences across sessions.
+
+```java
+@Service
+public class ContextMemoryService {
+    
+    @Autowired
+    private Mem0Client mem0Client;
+    
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
+    
+    public ConversationContext getContext(String sessionId) {
+        // Try L1 cache first (Redis)
+        ConversationContext context = (ConversationContext) 
+            redisTemplate.opsForValue().get("context:" + sessionId);
+        
+        if (context == null) {
+            // Fall back to mem0 for persistent context
+            context = mem0Client.getContext(sessionId);
+            if (context != null) {
+                // Cache in Redis for quick access
+                redisTemplate.opsForValue().set("context:" + sessionId, 
+                    context, Duration.ofMinutes(30));
+            }
+        }
+        
+        return context != null ? context : new ConversationContext(sessionId);
+    }
+    
+    public void updateContext(String sessionId, ConversationContext context) {
+        // Update both caches
+        redisTemplate.opsForValue().set("context:" + sessionId, 
+            context, Duration.ofMinutes(30));
+        mem0Client.updateContext(sessionId, context);
+    }
+    
+    public void addMemory(String sessionId, Memory memory) {
+        mem0Client.addMemory(sessionId, memory);
+        
+        // Invalidate cache to force refresh
+        redisTemplate.delete("context:" + sessionId);
+    }
+}
+```
+
+**Key Interview Question**: *"How do you handle context windows and memory management in long conversations?"*
+
+**Reference Answer**: The system uses a hierarchical memory approach. Short-term context is kept in Redis for quick access, while long-term memories are stored in mem0. We implement context window management by summarizing older parts of conversations and keeping only the most relevant recent exchanges. The system also uses semantic clustering to group related memories and retrieves them based on relevance to the current conversation.
+
+### LLM ReAct Pattern Implementation
+
+The ReAct (Reasoning + Acting) pattern enables the system to break down complex queries into reasoning steps and actions.
+
+```java
+@Component
+public class ReActEngine {
+    
+    @Autowired
+    private ChatModel chatModel;
+    
+    @Autowired
+    private ToolRegistry toolRegistry;
+    
+    public ReActResponse process(String query, ConversationContext context) {
+        ReActState state = new ReActState(query, context);
+        
+        while (!state.isComplete() && state.getStepCount() < MAX_STEPS) {
+            // Reasoning step
+            ReasoningResult reasoning = performReasoning(state);
+            state.addReasoning(reasoning);
+            
+            // Action step
+            if (reasoning.requiresAction()) {
+                ActionResult action = performAction(reasoning.getAction(), state);
+                state.addAction(action);
+                
+                // Observation step
+                if (action.hasObservation()) {
+                    state.addObservation(action.getObservation());
+                }
+            }
+            
+            // Check if we have enough information to provide final answer
+            if (reasoning.canProvideAnswer()) {
+                state.setComplete(true);
+            }
+        }
+        
+        return generateFinalResponse(state);
+    }
+    
+    private ReasoningResult performReasoning(ReActState state) {
+        String reasoningPrompt = buildReasoningPrompt(state);
+        ChatResponse response = chatModel.call(new Prompt(reasoningPrompt));
+        
+        return parseReasoningResponse(response.getResult().getOutput().getContent());
+    }
+    
+    private ActionResult performAction(Action action, ReActState state) {
+        Tool tool = toolRegistry.getTool(action.getToolName());
+        if (tool == null) {
+            return ActionResult.error("Tool not found: " + action.getToolName());
+        }
+        
+        return tool.execute(action.getParameters(), state.getContext());
+    }
+}
+```
+### LLM Planning Pattern implementation
+
+The Planning pattern enables the system to create and execute complex multi-step plans for loan processing workflows.
+
+**Planning Implementation:**
+
+```java
+@Service
+public class PlanningAgent {
+    
+    @Autowired
+    private ChatClient chatClient;
+    
+    @Autowired
+    private TaskExecutor taskExecutor;
+    
+    @Autowired
+    private PlanValidator planValidator;
+    
+    public PlanExecutionResult executePlan(String objective, PlanningConfig config) {
+        // Step 1: Generate plan
+        Plan plan = generatePlan(objective, config);
+        
+        // Step 2: Validate plan
+        ValidationResult validation = planValidator.validate(plan);
+        if (!validation.isValid()) {
+            return PlanExecutionResult.failed(validation.getErrors());
+        }
+        
+        // Step 3: Execute plan
+        return executePlanSteps(plan);
+    }
+    
+    private Plan generatePlan(String objective, PlanningConfig config) {
+        String prompt = String.format(
+            "Create a detailed plan to achieve the following objective: %s\n\n" +
+            "Available capabilities: %s\n\n" +
+            "Constraints: %s\n\n" +
+            "Generate a step-by-step plan with the following format:\n" +
+            "1. Step description\n" +
+            "   - Required tools: [tool1, tool2]\n" +
+            "   - Expected output: description\n" +
+            "   - Dependencies: [step numbers]\n\n" +
+            "Plan:",
+            objective,
+            config.getAvailableCapabilities(),
+            config.getConstraints());
+        
+        ChatResponse response = chatClient.call(new Prompt(prompt));
+        return parsePlan(response.getResult().getOutput().getContent());
+    }
+    
+    private PlanExecutionResult executePlanSteps(Plan plan) {
+        List<StepResult> stepResults = new ArrayList<>();
+        Map<String, Object> context = new HashMap<>();
+        
+        for (PlanStep step : plan.getSteps()) {
+            try {
+                // Check dependencies
+                if (!areDependenciesMet(step, stepResults)) {
+                    return PlanExecutionResult.failed("Dependencies not met for step: " + step.getId());
+                }
+                
+                // Execute step
+                StepResult result = executeStep(step, context);
+                stepResults.add(result);
+                
+                // Update context with results
+                context.put(step.getId(), result.getOutput());
+                
+                // Check if step failed
+                if (!result.isSuccess()) {
+                    return PlanExecutionResult.failed("Step failed: " + step.getId());
+                }
+                
+            } catch (Exception e) {
+                return PlanExecutionResult.failed("Step execution error: " + e.getMessage());
+            }
+        }
+        
+        return PlanExecutionResult.success(stepResults);
+    }
+    
+    private StepResult executeStep(PlanStep step, Map<String, Object> context) {
+        return taskExecutor.execute(TaskExecution.builder()
+            .stepId(step.getId())
+            .description(step.getDescription())
+            .tools(step.getRequiredTools())
+            .context(context)
+            .build());
+    }
+}
+
+// Example: Loan processing planning
+@Component
+public class LoanProcessingPlanner {
+    
+    @Autowired
+    private PlanningAgent planningAgent;
+    
+    public LoanProcessingResult processLoanWithPlanning(LoanApplication application) {
+        String objective = String.format(
+            "Process loan application for %s requesting $%,.2f. " +
+            "Complete all required verifications and make final decision.",
+            application.getApplicantName(),
+            application.getRequestedAmount());
+        
+        PlanningConfig config = PlanningConfig.builder()
+            .availableCapabilities(Arrays.asList(
+                "document_verification", "credit_check", "income_verification",
+                "employment_verification", "risk_assessment", "compliance_check"))
+            .constraints(Arrays.asList(
+                "Must complete within 30 minutes",
+                "Must verify all required documents",
+                "Must comply with lending regulations"))
+            .build();
+        
+        PlanExecutionResult result = planningAgent.executePlan(objective, config);
+        
+        return LoanProcessingResult.builder()
+            .application(application)
+            .executionResult(result)
+            .decision(extractDecisionFromPlan(result))
+            .processingTime(result.getExecutionTime())
+            .build();
+    }
+}
+```
+### Model Providers Routing with Higress AI gateway
+
+Higress AI Gateway provides intelligent routing and load balancing across multiple LLM providers, ensuring optimal performance and cost efficiency.
+
+**Gateway Configuration:**
+
+```java
+@Configuration
+public class HigressAIGatewayConfig {
+    
+    @Bean
+    public ModelProviderRouter modelProviderRouter() {
+        return ModelProviderRouter.builder()
+            .addProvider("openai", OpenAIProvider.builder()
+                .apiKey("${openai.api-key}")
+                .models(Arrays.asList("gpt-4", "gpt-3.5-turbo"))
+                .rateLimits(RateLimits.builder()
+                    .requestsPerMinute(60)
+                    .tokensPerMinute(150000)
+                    .build())
+                .build())
+            .addProvider("anthropic", AnthropicProvider.builder()
+                .apiKey("${anthropic.api-key}")
+                .models(Arrays.asList("claude-3-opus", "claude-3-sonnet"))
+                .rateLimits(RateLimits.builder()
+                    .requestsPerMinute(50)
+                    .tokensPerMinute(100000)
+                    .build())
+                .build())
+            .addProvider("azure", AzureProvider.builder()
+                .apiKey("${azure.api-key}")
+                .endpoint("${azure.endpoint}")
+                .models(Arrays.asList("gpt-4", "gpt-35-turbo"))
+                .rateLimits(RateLimits.builder()
+                    .requestsPerMinute(100)
+                    .tokensPerMinute(200000)
+                    .build())
+                .build())
+            .routingStrategy(RoutingStrategy.WEIGHTED_ROUND_ROBIN)
+            .fallbackStrategy(FallbackStrategy.CASCADE)
+            .build();
+    }
+}
+
+@Service
+public class IntelligentModelRouter {
+    
+    @Autowired
+    private ModelProviderRouter router;
+    
+    @Autowired
+    private ModelPerformanceMonitor monitor;
+    
+    @Autowired
+    private CostOptimizer costOptimizer;
+    
+    public ModelResponse routeRequest(ModelRequest request) {
+        // Determine optimal provider based on request characteristics
+        ProviderSelection selection = selectOptimalProvider(request);
+        
+        try {
+            // Route to selected provider
+            ModelResponse response = router.route(request, selection.getProvider());
+            
+            // Update performance metrics
+            monitor.recordSuccess(selection.getProvider(), response.getLatency());
+            
+            return response;
+            
+        } catch (Exception e) {
+            // Handle failures with fallback
+            return handleFailureWithFallback(request, selection, e);
+        }
+    }
+    
+    private ProviderSelection selectOptimalProvider(ModelRequest request) {
+        // Analyze request characteristics
+        RequestAnalysis analysis = analyzeRequest(request);
+        
+        // Consider multiple factors for provider selection
+        List<ProviderScore> scores = new ArrayList<>();
+        
+        for (String provider : router.getAvailableProviders()) {
+            double score = calculateProviderScore(provider, analysis);
+            scores.add(new ProviderScore(provider, score));
+        }
+        
+        // Select provider with highest score
+        ProviderScore best = scores.stream()
+            .max(Comparator.comparingDouble(ProviderScore::getScore))
+            .orElse(scores.get(0));
+        
+        return ProviderSelection.builder()
+            .provider(best.getProvider())
+            .confidence(best.getScore())
+            .reasoning(generateSelectionReasoning(best, analysis))
+            .build();
+    }
+    
+    private double calculateProviderScore(String provider, RequestAnalysis analysis) {
+        double score = 0.0;
+        
+        // Factor 1: Model capability match
+        score += calculateCapabilityScore(provider, analysis) * 0.4;
+        
+        // Factor 2: Performance (latency, availability)
+        score += calculatePerformanceScore(provider) * 0.3;
+        
+        // Factor 3: Cost efficiency
+        score += calculateCostScore(provider, analysis) * 0.2;
+        
+        // Factor 4: Current load
+        score += calculateLoadScore(provider) * 0.1;
+        
+        return score;
+    }
+    
+    private ModelResponse handleFailureWithFallback(
+            ModelRequest request, ProviderSelection selection, Exception error) {
+        
+        log.warn("Provider {} failed, attempting fallback", selection.getProvider(), error);
+        
+        // Get fallback providers
+        List<String> fallbackProviders = router.getFallbackProviders(selection.getProvider());
+        
+        for (String fallbackProvider : fallbackProviders) {
+            try {
+                ModelResponse response = router.route(request, fallbackProvider);
+                monitor.recordFallbackSuccess(fallbackProvider);
+                return response;
+            } catch (Exception fallbackError) {
+                log.warn("Fallback provider {} also failed", fallbackProvider, fallbackError);
+            }
+        }
+        
+        // All providers failed
+        throw new ModelRoutingException("All providers failed for request", error);
+    }
+}
+```
+### LLM Prompt Templates via Nacos
+
+Dynamic prompt management through Nacos configuration center enables hot-swapping of prompts without system restart.
+
+```java
+@Component
+@ConfigurationProperties(prefix = "prompts")
+public class PromptTemplateService {
+    
+    @NacosValue("${prompts.loan-assessment}")
+    private String loanAssessmentTemplate;
+    
+    @NacosValue("${prompts.risk-analysis}")
+    private String riskAnalysisTemplate;
+    
+    @NacosValue("${prompts.knowledge-query}")
+    private String knowledgeQueryTemplate;
+    
+    private final Map<String, String> templateCache = new ConcurrentHashMap<>();
+    
+    @PostConstruct
+    public void initializeTemplates() {
+        templateCache.put("loan_assessment", loanAssessmentTemplate);
+        templateCache.put("risk_analysis", riskAnalysisTemplate);
+        templateCache.put("knowledge_query", knowledgeQueryTemplate);
+    }
+    
+    public String getTemplate(String templateName) {
+        return templateCache.getOrDefault(templateName, getDefaultTemplate());
+    }
+    
+    @NacosConfigListener(dataId = "prompts", type = ConfigType.YAML)
+    public void onConfigChange(String configInfo) {
+        // Hot reload templates when configuration changes
+        log.info("Prompt templates updated, reloading...");
+        // Parse new configuration and update cache
+        updateTemplateCache(configInfo);
+    }
+    
+    private void updateTemplateCache(String configInfo) {
+        try {
+            ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
+            Map<String, String> newTemplates = mapper.readValue(configInfo, 
+                new TypeReference<Map<String, String>>() {});
+            
+            templateCache.clear();
+            templateCache.putAll(newTemplates);
+            
+            log.info("Successfully updated {} prompt templates", newTemplates.size());
+        } catch (Exception e) {
+            log.error("Failed to update prompt templates", e);
         }
     }
 }
 ```
+### Monitoring and Observability with OpenTelemetry
 
-### Integration Testing
+OpenTelemetry provides comprehensive observability for the AI system, enabling performance monitoring, error tracking, and optimization insights.
+
+**OpenTelemetry Configuration:**
 
 ```java
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@TestPropertySource(properties = {
-    "spring.ai.openai.api-key=test-key",
-    "external.services.enabled=false"
-})
-class LoanWorkflowIntegrationTest {
+@Configuration
+@EnableAutoConfiguration
+public class OpenTelemetryConfig {
     
-    @Autowired
-    private TestRestTemplate restTemplate;
+    @Bean
+    public OpenTelemetry openTelemetry() {
+        return OpenTelemetySdk.builder()
+            .setTracerProvider(
+                SdkTracerProvider.builder()
+                    .addSpanProcessor(BatchSpanProcessor.builder(
+                        OtlpGrpcSpanExporter.builder()
+                            .setEndpoint("http://jaeger:14250")
+                            .build())
+                        .build())
+                    .setResource(Resource.getDefault()
+                        .merge(Resource.builder()
+                            .put(ResourceAttributes.SERVICE_NAME, "fintech-ai-system")
+                            .put(ResourceAttributes.SERVICE_VERSION, "1.0.0")
+                            .build()))
+                    .build())
+            .setMeterProvider(
+                SdkMeterProvider.builder()
+                    .registerMetricReader(
+                        PeriodicMetricReader.builder(
+                            OtlpGrpcMetricExporter.builder()
+                                .setEndpoint("http://prometheus:9090")
+                                .build())
+                            .setInterval(Duration.ofSeconds(30))
+                            .build())
+                    .build())
+            .build();
+    }
+}
+
+@Component
+public class AISystemObservability {
     
-    @Autowired
-    private LoanApplicationRepository repository;
+    private final Tracer tracer;
+    private final Meter meter;
     
-    @MockBean
-    private ExternalServiceClient externalServiceClient;
+    // Metrics
+    private final Counter requestCounter;
+    private final Histogram responseTime;
+    private final Gauge activeConnections;
     
-    @Test
-    void shouldProcessCompleteLoanWorkflow() {
-        // Given
-        LoanApplicationRequest request = LoanApplicationRequest.builder()
-            .applicantName("John Doe")
-            .ssn("123-45-6789")
-            .annualIncome(75000.0)
-            .requestedAmount(25000.0)
+    public AISystemObservability(OpenTelemetry openTelemetry) {
+        this.tracer = openTelemetry.getTracer("fintech-ai-system");
+        this.meter = openTelemetry.getMeter("fintech-ai-system");
+        
+        // Initialize metrics
+        this.requestCounter = meter.counterBuilder("ai_requests_total")
+            .setDescription("Total number of AI requests")
             .build();
         
-        // Mock external service responses
-        when(externalServiceClient.getCreditReport(anyString()))
-            .thenReturn(CompletableFuture.completedFuture(createMockCreditReport()));
-        when(externalServiceClient.getTaxRecord(anyString()))
-            .thenReturn(CompletableFuture.completedFuture(createMockTaxRecord()));
+        this.responseTime = meter.histogramBuilder("ai_response_time_seconds")
+            .setDescription("AI response time in seconds")
+            .build();
         
-        // When
-        ResponseEntity<LoanApplicationResult> response = restTemplate.postForEntity(
-            "/api/loan/apply", request, LoanApplicationResult.class);
-        
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(response.getBody().isApproved()).isTrue();
-        
-        // Verify database state
-        LoanApplication savedApplication = repository.findByApplicantName("John Doe").orElseThrow();
-        assertThat(savedApplication.getStatus()).isEqualTo(ApplicationStatus.APPROVED);
+        this.activeConnections = meter.gaugeBuilder("ai_active_connections")
+            .setDescription("Number of active AI connections")
+            .buildObserver();
     }
     
-    @Test
-    void shouldHandleExternalServiceFailure() {
-        // Given
-        LoanApplicationRequest request = createTestRequest();
-        when(externalServiceClient.getCreditReport(anyString()))
-            .thenReturn(CompletableFuture.failedFuture(new TimeoutException()));
+    public <T> T traceAIOperation(String operationName, Supplier<T> operation) {
+        Span span = tracer.spanBuilder(operationName)
+            .setSpanKind(SpanKind.INTERNAL)
+            .startSpan();
         
-        // When
-        ResponseEntity<LoanApplicationResult> response = restTemplate.postForEntity(
-            "/api/loan/apply", request, LoanApplicationResult.class);
+        try (Scope scope = span.makeCurrent()) {
+            long startTime = System.nanoTime();
+            
+            // Execute operation
+            T result = operation.get();
+            
+            // Record metrics
+            long duration = System.nanoTime() - startTime;
+            responseTime.record(duration / 1_000_000_000.0);
+            requestCounter.add(1);
+            
+            // Add span attributes
+            span.setStatus(StatusCode.OK);
+            span.setAttribute("operation.success", true);
+            
+            return result;
+            
+        } catch (Exception e) {
+            span.setStatus(StatusCode.ERROR, e.getMessage());
+            span.setAttribute("operation.success", false);
+            span.setAttribute("error.type", e.getClass().getSimpleName());
+            throw e;
+        } finally {
+            span.end();
+        }
+    }
+    
+    public void recordLLMMetrics(String provider, String model, long tokens, 
+                               double latency, boolean success) {
         
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
-        assertThat(response.getBody().getErrorMessage()).contains("External service unavailable");
+        Attributes attributes = Attributes.builder()
+            .put("provider", provider)
+            .put("model", model)
+            .put("success", success)
+            .build();
+        
+        meter.counterBuilder("llm_requests_total")
+            .build()
+            .add(1, attributes);
+        
+        meter.histogramBuilder("llm_token_usage")
+            .build()
+            .record(tokens, attributes);
+        
+        meter.histogramBuilder("llm_latency_seconds")
+            .build()
+            .record(latency, attributes);
+    }
+}
+
+// Usage in services
+@Service
+public class MonitoredAIService {
+    
+    @Autowired
+    private AISystemObservability observability;
+    
+    @Autowired
+    private ChatClient chatClient;
+    
+    public String processWithMonitoring(String query) {
+        return observability.traceAIOperation("llm_query_processing", () -> {
+            long startTime = System.currentTimeMillis();
+            
+            try {
+                ChatResponse response = chatClient.call(new Prompt(query));
+                
+                // Record success metrics
+                long latency = System.currentTimeMillis() - startTime;
+                observability.recordLLMMetrics("openai", "gpt-4", 
+                    response.getResult().getMetadata().getUsage().getTotalTokens(),
+                    latency / 1000.0, true);
+                
+                return response.getResult().getOutput().getContent();
+                
+            } catch (Exception e) {
+                // Record failure metrics
+                long latency = System.currentTimeMillis() - startTime;
+                observability.recordLLMMetrics("openai", "gpt-4", 0, 
+                    latency / 1000.0, false);
+                throw e;
+            }
+        });
     }
 }
 ```
 
-## Interview Questions and Insights
+## Use Cases and Examples
 
-**Q: How would you handle the scenario where AI models provide conflicting recommendations compared to traditional rule-based systems?**
+### Use Case 1: Automated Loan Application Processing
 
-**A:** Implement a hybrid decision framework with the following approach:
-- Use confidence scores from both systems
-- When conflicts arise, route to human review if the difference exceeds a threshold
-- Maintain audit trails showing both AI and traditional assessments
-- Implement A/B testing to validate AI improvements over time
-- Use ensemble methods to combine predictions when both systems have high confidence
+**Scenario**: A customer applies for a $50,000 personal loan through the chat interface.
 
-**Q: What strategies would you use to ensure data privacy and compliance in a lending AI system?**
+**Flow**:
+1. Customer initiates conversation: "I'd like to apply for a personal loan"
+2. AI classifies intent as LOAN_APPLICATION
+3. System guides customer through document collection
+4. AI processes submitted documents using OCR and NLP
+5. Automated workflow calls external systems for verification
+6. AI makes preliminary assessment with 92% confidence
+7. System auto-approves loan with conditions
 
-**A:** 
-- Implement data minimization principles - only collect necessary information
-- Use differential privacy techniques for AI training data
-- Implement proper data retention policies with automated deletion
-- Ensure all AI model training uses anonymized data
-- Implement role-based access controls with audit logging
-- Regular compliance audits and penetration testing
-- Clear consent mechanisms and opt-out capabilities
-
-**Q: How would you design the system to handle peak loads during loan application seasons?**
-
-**A:**
-- Implement auto-scaling groups for microservices
-- Use message queues (Apache Kafka) for asynchronous processing
-- Implement circuit breakers for external service calls
-- Use caching strategies for frequently accessed data
-- Database read replicas for scaling read operations
-- CDN for static content delivery
-- Implement rate limiting to prevent abuse
-
-## Deployment and DevOps Considerations
-
-### Docker Configuration
-
-```dockerfile
-# Multi-stage build for Spring Boot application
-FROM maven:3.8.4-openjdk-17 AS builder
-WORKDIR /app
-COPY pom.xml .
-COPY src ./src
-RUN mvn clean package -DskipTests
-
-FROM openjdk:17-jre-slim
-WORKDIR /app
-COPY --from=builder /app/target/lending-service.jar app.jar
-
-# Security: Run as non-root user
-RUN addgroup --system lending && adduser --system --group lending
-USER lending:lending
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8080/actuator/health || exit 1
-
-EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
+```java
+// Example implementation
+@Test
+public void testAutomatedLoanFlow() {
+    // Simulate customer input
+    ConversationRequest request = ConversationRequest.builder()
+        .text("I need a $50,000 personal loan")
+        .sessionId("session-123")
+        .build();
+    
+    // Process through conversation service
+    ConversationResponse response = conversationService.processMessage(request);
+    
+    assertThat(response.getIntent()).isEqualTo(IntentType.LOAN_APPLICATION);
+    assertThat(response.getNextSteps()).contains("document_collection");
+    
+    // Simulate document upload
+    ConversationRequest docRequest = ConversationRequest.builder()
+        .files(Arrays.asList(mockPayStub, mockBankStatement))
+        .sessionId("session-123")
+        .build();
+    
+    ConversationResponse docResponse = conversationService.processMessage(docRequest);
+    
+    // Verify AI processing
+    assertThat(docResponse.getProcessingResult().getConfidence()).isGreaterThan(0.9);
+}
 ```
 
-### Kubernetes Deployment
+### Use Case 2: Multi-Modal Customer Support
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: lending-service
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: lending-service
-  template:
-    metadata:
-      labels:
-        app: lending-service
-    spec:
-      containers:
-      - name: lending-service
-        image: lending-service:latest
-        ports:
-        - containerPort: 8080
-        env:
-        - name: SPRING_PROFILES_ACTIVE
-          value: "kubernetes"
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: database-secret
-              key: url
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "250m"
-          limits:
-            memory: "1Gi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /actuator/health
-            port: 8080
-          initialDelaySeconds: 60
-          periodSeconds: 30
-        readinessProbe:
-          httpGet:
-            path: /actuator/health/readiness
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 10
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: lending-service
-spec:
-  selector:
-    app: lending-service
-  ports:
-  - protocol: TCP
-    port: 80
-    targetPort: 8080
-  type: LoadBalancer
+**Scenario**: Customer uploads a photo of their bank statement and asks about eligibility.
+
+**Flow**:
+1. Customer uploads bank statement image
+2. OCR extracts text and financial data
+3. AI analyzes income patterns and expenses
+4. System queries knowledge base for eligibility criteria
+5. AI provides personalized eligibility assessment
+
+### Use Case 3: Complex Financial Query Resolution
+
+**Scenario**: "What are the tax implications of early loan repayment?"
+
+**Flow**:
+1. ReAct engine breaks down the query
+2. System retrieves relevant tax documents from knowledge base
+3. AI reasons through tax implications step by step
+4. System provides comprehensive answer with citations
+
+## Performance Optimization and Scalability
+
+### Caching Strategy
+
+The system implements a multi-level caching strategy to achieve sub-30-second response times:
+
+```java
+@Service
+public class CachingService {
+    
+    @Autowired
+    private RedisTemplate<String, Object> redisTemplate;
+    
+    @Cacheable(value = "llm-responses", key = "#promptHash")
+    public String getCachedResponse(String promptHash) {
+        return (String) redisTemplate.opsForValue().get("llm:" + promptHash);
+    }
+    
+    @CachePut(value = "llm-responses", key = "#promptHash")
+    public String cacheResponse(String promptHash, String response) {
+        redisTemplate.opsForValue().set("llm:" + promptHash, response, 
+            Duration.ofHours(1));
+        return response;
+    }
+    
+    @Cacheable(value = "embeddings", key = "#text.hashCode()")
+    public List<Float> getCachedEmbedding(String text) {
+        return (List<Float>) redisTemplate.opsForValue().get("embedding:" + text.hashCode());
+    }
+}
 ```
+
+### Load Balancing and Horizontal Scaling
+
+{% mermaid flowchart LR %}
+    A[Load Balancer] --> B[Service Instance 1]
+    A --> C[Service Instance 2]
+    A --> D[Service Instance 3]
+    
+    B --> E[LLM Provider 1]
+    B --> F[LLM Provider 2]
+    C --> E
+    C --> F
+    D --> E
+    D --> F
+    
+    E --> G[Redis Cache]
+    F --> G
+    
+    B --> H[Vector DB]
+    C --> H
+    D --> H
+{% endmermaid %}
+
+### Database Optimization
+
+```java
+@Entity
+@Table(name = "loan_applications", indexes = {
+    @Index(name = "idx_applicant_status", columnList = "applicant_id, status"),
+    @Index(name = "idx_created_date", columnList = "created_date")
+})
+public class LoanApplication {
+    
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    
+    @Column(name = "applicant_id", nullable = false)
+    private String applicantId;
+    
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false)
+    private ApplicationStatus status;
+    
+    @Column(name = "created_date", nullable = false)
+    private LocalDateTime createdDate;
+    
+    // Optimized for queries
+    @Column(name = "search_vector", columnDefinition = "tsvector")
+    private String searchVector;
+}
+```
+
+**Key Interview Question**: *"How do you ensure the system can handle 2000+ concurrent users while maintaining response times?"*
+
+**Reference Answer**: The system uses several optimization techniques: 1) Multi-level caching with Redis for frequently accessed data, 2) Connection pooling for database and external service calls, 3) Asynchronous processing for non-critical operations, 4) Load balancing across multiple LLM providers, 5) Database query optimization with proper indexing, 6) Context caching to avoid repeated LLM calls for similar queries, and 7) Horizontal scaling of microservices based on demand.
 
 ## Conclusion
 
-This FinTech AI Workflow and Chat System represents a modern approach to lending automation that combines the reliability of traditional rule-based systems with the intelligence and adaptability of AI. The architecture provides:
+The FinTech AI Workflow and Chat System represents a sophisticated integration of traditional financial workflows with cutting-edge AI technologies. By combining the reliability of established banking processes with the intelligence of modern AI systems, the platform delivers a superior user experience while maintaining the security and compliance requirements essential in financial services.
 
-- **Scalability**: Microservices architecture with containerized deployment
-- **Reliability**: Circuit breakers, fallback mechanisms, and comprehensive monitoring
-- **Intelligence**: AI-powered document analysis, risk assessment, and conversational interfaces
-- **Compliance**: Comprehensive audit trails, data encryption, and regulatory adherence
-- **User Experience**: Intuitive chat interface with multi-modal input support
+The architecture's microservices design ensures scalability and maintainability, while the AI components provide intelligent automation that reduces processing time and improves accuracy. The system's ability to handle over 2000 concurrent conversations with rapid response times demonstrates its enterprise readiness.
 
-The system is designed to evolve with changing business requirements while maintaining the high standards of security and reliability required in financial services.
+Key success factors include:
+- Seamless integration between traditional and AI-powered workflows
+- Robust multi-modal processing capabilities
+- Intelligent context management and memory systems
+- Flexible prompt template management for rapid iteration
+- Comprehensive performance optimization strategies
 
-## External References
+The system sets a new standard for AI-powered financial services, combining the best of human expertise with artificial intelligence to create a truly intelligent lending platform.
+
+## External Resources and References
 
 - [Spring AI Documentation](https://docs.spring.io/spring-ai/reference/)
-- [Spring Boot Best Practices](https://spring.io/guides)
-- [OpenAI API Documentation](https://platform.openai.com/docs)
-- [Microservices Patterns](https://microservices.io/patterns/)
-- [GDPR Compliance Guidelines](https://gdpr.eu/)
-- [PCI DSS Requirements](https://www.pcisecuritystandards.org/)
-- [Apache Kafka Documentation](https://kafka.apache.org/documentation/)
-- [Redis Documentation](https://redis.io/documentation)
-- [Kubernetes Documentation](https://kubernetes.io/docs/)
-- [Docker Best Practices](https://docs.docker.com/develop/dev-best-practices/)
+- [Higress AI Gateway](https://higress.io/)
+- [mem0 Memory Management](https://github.com/mem0ai/mem0)
+- [Nacos Configuration Center](https://nacos.io/)
+- [LangGraph Pattern Implementation](https://langchain-ai.github.io/langgraph/)
+- [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
+- [ReAct Pattern Paper](https://arxiv.org/abs/2210.03629)
+- [RAG Best Practices](https://docs.llamaindex.ai/en/stable/getting_started/concepts.html)
+- [Financial Services AI Compliance Guidelines](https://www.federalregister.gov/documents/2021/03/15/2021-05015/artificial-intelligence-risk-management)
+- [OpenAI API Best Practices](https://platform.openai.com/docs/guides/production-best-practices)
+- [Vector Database Performance Optimization](https://www.pinecone.io/learn/vector-database-performance/)
+- [Microservices Security Patterns](https://microservices.io/patterns/security/)
