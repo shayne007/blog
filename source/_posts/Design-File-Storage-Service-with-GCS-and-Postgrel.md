@@ -18,8 +18,7 @@ The File Storage Service is a robust, scalable solution for handling file upload
 
 ## High-Level Architecture
 
-```mermaid
-graph TB
+{% mermaid graph TB %}
     subgraph "Client Layer"
         A[Web Client] 
         B[Mobile Client]
@@ -70,7 +69,7 @@ graph TB
     I --> O
     G --> P
     H --> P
-```
+{% endmermaid %}
 
 ## Core Components Deep Dive
 
@@ -1944,8 +1943,7 @@ public class FileBackupService {
 
 ### Multi-Region Deployment Flow
 
-```mermaid
-graph TB
+{% mermaid graph TB %}
     subgraph "Primary Region (US-Central)"
         A[API Gateway] --> B[File Service Instances]
         B --> C[Primary PostgreSQL]
@@ -1980,7 +1978,7 @@ graph TB
     style A fill:#e1f5fe
     style F fill:#e8f5e8
     style K fill:#fff3e0
-```
+{% endmermaid %}
 
 ## Cost Optimization Strategies
 
