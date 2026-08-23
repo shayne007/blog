@@ -23,7 +23,7 @@ The **Finance Personal Loan Approval System** is an enterprise-grade multi-agent
 
 The overall system architecture consists of a frontend Chat UI layer, an API Gateway/Agent Service layer, and specialized agentic sub-systems backed by skill registries and MCP tools.
 
-{% mermaid graph TB %}
+{% mermaid %}
 graph TD
     subgraph Frontend Layer
         UI[Chat UI / Web Portal]
@@ -83,7 +83,7 @@ The **Router Agent** serves as the entry point and orchestrator in the LangGraph
 
 ### Workflow Sequence
 
-{% mermaid graph TB %}
+{% mermaid %}
 sequenceDiagram
     autonumber
     actor User
@@ -118,7 +118,7 @@ sequenceDiagram
 
 This sub-agent connects to external credit scoring infrastructure using **Model Context Protocol (MCP)** tools to gather credit history, existing debt ratios, and risk profiles.
 
-{% mermaid graph TB %}
+{% mermaid %}
 graph LR
     subgraph Credit Agent Workflow
         Start([Start Credit Gen]) --> ValidateInfo[Validate Identity Schema]
@@ -133,7 +133,7 @@ graph LR
 
 The **Personal Loan Sub-Agent** coordinates document ingestion, income verification, and human-in-the-loop confirmation before submitting the loan application for final bank clearance.
 
-{% mermaid graph TB %}
+{% mermaid %}
 graph TD
     A[Start Loan Process] --> B{User Uploaded Docs?}
     B -- Yes --> C[Skill: Vision OCR & Doc Extraction]
